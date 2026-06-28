@@ -125,24 +125,33 @@
 
 (defn- load-cached-catalogs!
   "Instant first paint of the source/sink catalogs from the cache, before the
-  background refresh re-scans (see reload-catalogs!)."
+  background refresh re-scans (see reload-catalogs!). `snk` may be nil — a source
+  chosen without a sink shows the source's tracks alone (the sink catalog and free
+  space come back empty/0, see set-catalogs-from-cache!)."
   [state-atom conn src snk]
   (set-catalogs-from-cache! state-atom conn src snk)
   (swap! state-atom state/append-log
-         (format "Loaded '%s' → '%s' from cache; refreshing…" (:name src) (:name snk))))
+         (if snk
+           (format "Loaded '%s' → '%s' from cache; refreshing…" (:name src) (:name snk))
+           (format "Loaded '%s' (no sink) from cache; refreshing…" (:name src)))))
 
 (defn- reload-catalogs!
   "Refresh the source/sink catalogs. First loads them instantly from the cache so
-  the table renders right away, then re-scans both libraries in the background
+  the table renders right away, then re-scans the libraries in the background
   (reusing cached tags for unchanged files), updates the cache, and refreshes the
   catalogs + capacity. Pre-selects tracks already on the sink (via
   state/set-catalogs). Supersedes any refresh still running from an earlier
-  source/sink change."
+  source/sink change.
+
+  Runs whenever a source is chosen, with or without a sink: a sink-less source
+  shows its tracks alone (empty sink catalog, 0 free, nothing pre-selected) so the
+  table is populated for browsing before a sink is picked — Preview/Sync stay
+  disabled until both are set (see fmt/can-preview?)."
   [state-atom {:keys [conn path]}]
   (let [s   @state-atom
         src (state/library-by-id s (:source-id s))
         snk (state/library-by-id s (:sink-id s))]
-    (when (and src snk)
+    (when src
       ;; Bump the scan generation *before* painting from the cache, so any scan
       ;; still in flight from an earlier selection is superseded and can't swap its
       ;; now-stale catalogs in after this refresh has started.
@@ -155,12 +164,15 @@
           ;; this overlaps work whenever they are on different devices (the common
           ;; case: one local, one MTP) and is harmless when they share one. Both feed
           ;; the one shared progress accumulator and reconcile their own cache entry.
+          ;; With no sink, only the source is scanned.
           (let [src-fut (future (sync/scan-into-cache! conn (:id src) src
                                                        (scan-callback state-atom (:name src) superseded? prog)))
-                snk-cat (sync/scan-into-cache! conn (:id snk) snk
-                                               (scan-callback state-atom (:name snk) superseded? prog))
+                snk-cat (when snk
+                          (sync/scan-into-cache! conn (:id snk) snk
+                                                 (scan-callback state-atom (:name snk) superseded? prog)))
                 src-cat @src-fut
-                free    (sync/library-free! snk)]
+                snk-cat (or snk-cat {})
+                free    (if snk (sync/library-free! snk) 0)]
             (cache/snapshot! conn path)
             (when-not (superseded?)
               (swap! state-atom
@@ -242,12 +254,11 @@
 
 (defn start!
   "Once the UI is mounted, kick off the initial catalog load for any persisted
-  default source/sink (pre-selected at state init), so a launch with defaults
-  lands ready to sync."
+  default source (pre-selected at state init), so a launch with a default source
+  lands with its tracks shown — and ready to sync when a default sink is set too."
   [state-atom cache]
-  (let [{:keys [source-id sink-id]} @state-atom]
-    (when (and source-id sink-id)
-      (future (reload-catalogs! state-atom cache)))))
+  (when (:source-id @state-atom)
+    (future (reload-catalogs! state-atom cache))))
 
 (def ^:private mixed-device-msg
   "A library's roots must all live on one device — remove the existing roots first to switch device.")

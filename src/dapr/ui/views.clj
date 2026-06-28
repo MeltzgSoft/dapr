@@ -108,15 +108,19 @@
 
 (defn- capacity-bar
   "Capacity meter for the sink library `sink-name` (how full it would be after the
-  selected sync), so it's clear which library the bar is about."
+  selected sync), so it's clear which library the bar is about. With no sink chosen
+  (sink-name nil) capacity is undefined — the bar shows a prompt rather than a
+  misleading 0 B / 0 B, since the source tracks are shown for browsing only until a
+  sink is picked."
   [capacity sink-name]
   {:fx/type :h-box :spacing 8 :alignment :center-left
    :children [{:fx/type :label :min-width 70
                :text (if sink-name (str "Capacity — " sink-name) "Capacity")}
               {:fx/type :progress-bar :h-box/hgrow :always :max-width Double/MAX_VALUE
-               :progress (fmt/capacity-fraction capacity)}
-              {:fx/type :label :text (fmt/capacity-text capacity)
-               :style (if (fmt/over-capacity? capacity) "-fx-text-fill: red;" "")}]})
+               :progress (if sink-name (fmt/capacity-fraction capacity) 0.0)}
+              {:fx/type :label
+               :text (if sink-name (fmt/capacity-text capacity) "Select a sink")
+               :style (if (and sink-name (fmt/over-capacity? capacity)) "-fx-text-fill: red;" "")}]})
 
 (defn- track-rows
   "Resolve the source catalog into a sorted vector of row maps for the track

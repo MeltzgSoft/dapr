@@ -88,7 +88,16 @@
           s (state/set-catalogs state/initial-state source sink 100)]
       (is (= #{["a" 10]} (:selected s)))
       ;; budget = 100 free + 10 on-sink = 110; used = selected (a) = 10
-      (is (= {:used 10 :budget 110 :free 100} (:capacity s))))))
+      (is (= {:used 10 :budget 110 :free 100} (:capacity s)))))
+  (testing "a source chosen with no sink shows tracks but pre-selects nothing and
+            has zero capacity (browsing only until a sink is picked)"
+    (let [source {["a" 10] {:size 10 :key ["a" 10]}
+                  ["b" 20] {:size 20 :key ["b" 20]}}
+          s (state/set-catalogs state/initial-state source {} 0)]
+      (is (= #{} (:selected s)))
+      (is (= {:used 0 :budget 0 :free 0} (:capacity s)))
+      (testing "no track fits with no sink, so selecting one is refused"
+        (is (= #{} (:selected (state/toggle-track s ["a" 10]))))))))
 
 (deftest toggle-track-test
   (let [source {["a" 10] {:size 10 :key ["a" 10]}
