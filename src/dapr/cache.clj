@@ -164,6 +164,40 @@
   (doseq [lib legacy-libraries]
     (upsert-library! conn (-> lib (select-keys [:name :roots]) (assoc :id nil)))))
 
+;; --- app settings ------------------------------------------------------------
+;; Global, persisted app config (theme, log dir, sink-only handling, …). Kept as a
+;; single EDN map under :app/settings on one singleton entity rather than one attr
+;; per setting, so adding a setting needs no schema change or snapshot-version bump
+;; — an older snapshot simply lacks the entity until the first write. Values must
+;; be EDN-readable (keywords/strings/numbers/booleans/collections thereof), since
+;; they ride the same EDN snapshot as the rest of the DB.
+
+(defn- settings-eid
+  "Entity id of the singleton settings entity, or nil if none has been written."
+  [db]
+  (d/q '[:find ?e . :where [?e :app/settings]] db))
+
+(defn app-settings
+  "All persisted app settings as a {keyword value} map (empty if none set)."
+  [db]
+  (or (d/q '[:find ?v . :where [?e :app/settings ?v]] db) {}))
+
+(defn app-setting
+  "Value of app setting `k`, or `default` (nil) when unset."
+  ([db k] (app-setting db k nil))
+  ([db k default] (get (app-settings db) k default)))
+
+(defn set-app-setting!
+  "Persist app setting `k` -> `v` on the singleton settings entity (creating it on
+  first write). A nil `v` clears the setting. Returns the updated settings map."
+  [conn k v]
+  (let [db   (d/db conn)
+        cur  (app-settings db)
+        next (if (nil? v) (dissoc cur k) (assoc cur k v))]
+    (d/transact! conn [{:db/id (or (settings-eid db) "app-settings")
+                        :app/settings next}])
+    next))
+
 ;; --- catalog queries ---------------------------------------------------------
 
 (defn library-catalog

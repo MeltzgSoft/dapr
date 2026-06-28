@@ -39,6 +39,7 @@
   (let [db (d/db (:conn cache))]
     (atom (-> state/initial-state
               (state/set-libraries (cache/libraries db))
+              (state/set-settings (cache/app-settings db))
               ;; Pre-select the persisted default source/sink so a launch lands
               ;; ready to sync (their catalogs are loaded by the renderer once it
               ;; mounts — see events/start!).

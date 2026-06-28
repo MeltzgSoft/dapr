@@ -265,6 +265,12 @@
       ::settings-open  (swap! state-atom state/open-settings)
       ::settings-close (swap! state-atom state/close-settings)
 
+      ;; app settings — generic seam: update the in-memory map and persist to the
+      ;; cache DB. Feature settings dispatch ::set-setting with {:key :value}.
+      ::set-setting    (do (swap! state-atom state/set-setting (:key event) (:value event))
+                           (cache/set-app-setting! conn (:key event) (:value event))
+                           (cache/snapshot! conn (:path cache)))
+
       ;; library manager — the device type is chosen from the New… submenu and
       ;; pins the new library to file://, mtp:// or smb:// (editing derives it from
       ;; the existing roots)

@@ -66,6 +66,20 @@
       (is (nil? (:source-id s)))
       (is (= "b" (:sink-id s))))))
 
+(deftest settings-test
+  (testing "set-settings replaces the whole map; nil becomes empty"
+    (is (= {:theme :dark} (:settings (state/set-settings state/initial-state {:theme :dark}))))
+    (is (= {} (:settings (state/set-settings state/initial-state nil)))))
+  (testing "set-setting sets a key; setting reads it, with a default for misses"
+    (let [s (-> state/initial-state
+                (state/set-setting :theme :dark)
+                (state/set-setting :log-dir "/tmp"))]
+      (is (= :dark (state/setting s :theme)))
+      (is (= "/tmp" (state/setting s :log-dir)))
+      (is (= :system (state/setting s :missing :system)))
+      (testing "a nil value clears just that key"
+        (is (= {:log-dir "/tmp"} (:settings (state/set-setting s :theme nil))))))))
+
 (deftest set-catalogs-test
   (testing "pre-selects sink tracks and computes capacity"
     (let [source {["a" 10] {:size 10 :key ["a" 10]}

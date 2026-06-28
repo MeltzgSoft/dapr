@@ -26,6 +26,7 @@
    :settings-open? false  ; whether the library-management modal is showing
    :editor         nil    ; library being added/edited, or nil
    :browser        nil    ; folder browser, or nil
+   :settings       {}     ; persisted app settings (theme, log dir, …); see dapr.cache
    :status         :idle  ; :idle :scanning :planned :syncing :done :error
    :scan-gen       0      ; bumped per scan; lets a new scan supersede a running one
    :progress       nil    ; {:done n :total t}
@@ -124,6 +125,28 @@
     (-> state (update :selected conj k) (recompute-capacity))
 
     :else state))
+
+;; --- app settings ------------------------------------------------------------
+;; The :settings map mirrors the persisted app config (dapr.cache); the event
+;; handler persists alongside these pure transitions (see dapr.ui.events).
+
+(defn set-settings
+  "Replace the whole settings map (loaded from the cache on startup)."
+  [state settings]
+  (assoc state :settings (or settings {})))
+
+(defn set-setting
+  "Set a single app setting key. A nil value clears it, mirroring how the cache
+  persists settings."
+  [state k v]
+  (if (nil? v)
+    (update state :settings dissoc k)
+    (assoc-in state [:settings k] v)))
+
+(defn setting
+  "Read app setting `k`, falling back to `default` (nil) when unset."
+  ([state k] (setting state k nil))
+  ([state k default] (get (:settings state) k default)))
 
 ;; --- settings modal ----------------------------------------------------------
 

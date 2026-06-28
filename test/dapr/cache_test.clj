@@ -65,6 +65,43 @@
       (cache/delete-library! conn b)
       (is (nil? (cache/default-library (d/db conn) :sink))))))
 
+(deftest app-settings-test
+  (let [conn (cache/empty-conn)]
+    (testing "unset settings read as nil / default / empty map"
+      (is (nil? (cache/app-setting (d/db conn) :theme)))
+      (is (= :system (cache/app-setting (d/db conn) :theme :system)))
+      (is (= {} (cache/app-settings (d/db conn)))))
+
+    (testing "multiple keys persist on a single singleton entity"
+      (cache/set-app-setting! conn :theme :dark)
+      (cache/set-app-setting! conn :log-dir "/tmp/logs")
+      (is (= :dark (cache/app-setting (d/db conn) :theme)))
+      (is (= {:theme :dark :log-dir "/tmp/logs"} (cache/app-settings (d/db conn))))
+      (is (= 1 (count (d/q '[:find [?e ...] :where [?e :app/settings]] (d/db conn))))))
+
+    (testing "updating a key overwrites it in place"
+      (cache/set-app-setting! conn :theme :light)
+      (is (= :light (cache/app-setting (d/db conn) :theme))))
+
+    (testing "a nil value clears just that key"
+      (cache/set-app-setting! conn :theme nil)
+      (is (nil? (cache/app-setting (d/db conn) :theme)))
+      (is (= {:log-dir "/tmp/logs"} (cache/app-settings (d/db conn)))))))
+
+(deftest app-settings-snapshot-roundtrip-test
+  (let [^java.nio.file.Path p (Files/createTempFile "dapr-cache" ".edn" (make-array FileAttribute 0))
+        path (.toFile p)]
+    (try
+      (let [conn (cache/empty-conn)]
+        (cache/set-app-setting! conn :theme :dark)
+        (cache/set-app-setting! conn :log-dir "/var/log/dapr")
+        (cache/snapshot! conn path)
+        (testing "the settings map survives a snapshot round-trip"
+          (is (= {:theme :dark :log-dir "/var/log/dapr"}
+                 (cache/app-settings (d/db (cache/load! path)))))))
+      (finally
+        (Files/deleteIfExists p)))))
+
 (deftest replace-library-tracks-test
   (let [conn (cache/empty-conn)
         a    (cache/upsert-library! conn {:name "A" :roots ["file:///a/"]})]
