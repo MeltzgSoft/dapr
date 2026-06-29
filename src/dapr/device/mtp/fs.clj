@@ -11,7 +11,7 @@
   (:require [clojure.string :as str]
             [dapr.device.fs :as dfs])
   (:import (java.net URI)
-           (java.nio.file FileSystemNotFoundException FileSystems Paths)
+           (java.nio.file FileSystemNotFoundException FileSystems Files LinkOption Paths)
            (org.meltzg.fs.mtp MTPDeviceBridge)))
 
 (defn- ensure-filesystem!
@@ -29,6 +29,14 @@
 
 (defmethod dfs/dir-children! :mtp [uri]
   (dfs/directory-children! (dfs/root-path! uri) dfs/directory?))
+
+(defmethod dfs/available? :mtp [uri-str]
+  ;; Opening the MTP filesystem for a disconnected device (or with no native MTP
+  ;; access) throws; catch Throwable so a native/linkage failure degrades to
+  ;; unavailable rather than crashing the probe.
+  (try
+    (Files/isDirectory (dfs/root-path! uri-str) (make-array LinkOption 0))
+    (catch Throwable _ false)))
 
 (defn- device-label
   "A non-blank display name for a device. libmtp often returns an empty

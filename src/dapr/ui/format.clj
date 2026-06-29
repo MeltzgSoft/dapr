@@ -96,6 +96,13 @@
            (format " · Blocked %d" (:blocked summary))))
     "No plan yet."))
 
+(defn library-unavailable?
+  "True when library `id`'s availability has been probed and came back false, so
+  the UI should grey it out and refuse selection. Unprobed libraries (absent from
+  the id->bool `availability` map) are treated as available."
+  [availability id]
+  (false? (get availability id)))
+
 (defn can-preview?
   "True when distinct source and sink libraries are chosen and not busy."
   [{:keys [source-id sink-id status]}]
