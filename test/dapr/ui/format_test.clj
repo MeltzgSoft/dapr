@@ -114,3 +114,11 @@
   (testing "unprobed libraries (absent from the map) are treated as available"
     (is (false? (fmt/library-unavailable? {} 1)))
     (is (false? (fmt/library-unavailable? nil 1)))))
+
+(deftest library-unavailable?-test
+  (testing "true only when probed and explicitly unavailable"
+    (is (true? (fmt/library-unavailable? {1 false} 1)))
+    (is (false? (fmt/library-unavailable? {1 true} 1))))
+  (testing "unprobed libraries (absent from the map) are treated as available"
+    (is (false? (fmt/library-unavailable? {} 1)))
+    (is (false? (fmt/library-unavailable? nil 1)))))
