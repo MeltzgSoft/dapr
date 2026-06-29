@@ -106,6 +106,17 @@
   [availability id]
   (false? (get availability id)))
 
+(defn active-theme
+  "Resolve the effective UI theme (:dark or :light) from the persisted `:theme`
+  setting and the OS-reported colour scheme. An explicit :dark/:light wins; :system
+  (or an unset theme) follows the OS, defaulting to :light when the OS scheme is
+  unknown (nil)."
+  [theme os-color-scheme]
+  (case theme
+    :dark  :dark
+    :light :light
+    (or os-color-scheme :light)))
+
 (defn can-preview?
   "True when distinct source and sink libraries are chosen and not busy."
   [{:keys [source-id sink-id status]}]

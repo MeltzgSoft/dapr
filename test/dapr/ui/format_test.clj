@@ -95,6 +95,18 @@
   (testing "false when not yet planned"
     (is (false? (fmt/can-sync? {:status :idle :plan nil})))))
 
+(deftest active-theme-test
+  (testing "explicit :dark/:light win regardless of the OS scheme"
+    (is (= :dark (fmt/active-theme :dark :light)))
+    (is (= :light (fmt/active-theme :light :dark))))
+  (testing ":system (or nil) follows the OS scheme"
+    (is (= :dark (fmt/active-theme :system :dark)))
+    (is (= :light (fmt/active-theme :system :light)))
+    (is (= :dark (fmt/active-theme nil :dark))))
+  (testing ":system falls back to :light when the OS scheme is unknown"
+    (is (= :light (fmt/active-theme :system nil)))
+    (is (= :light (fmt/active-theme nil nil)))))
+
 (deftest library-unavailable?-test
   (testing "true only when probed and explicitly unavailable"
     (is (true? (fmt/library-unavailable? {1 false} 1)))

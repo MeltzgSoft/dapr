@@ -104,7 +104,12 @@
       (is (= "/tmp" (state/setting s :log-dir)))
       (is (= :system (state/setting s :missing :system)))
       (testing "a nil value clears just that key"
-        (is (= {:log-dir "/tmp"} (:settings (state/set-setting s :theme nil))))))))
+        (is (= {:log-dir "/tmp"} (:settings (state/set-setting s :theme nil)))))))
+  (testing "set-os-color-scheme records the OS scheme (not a persisted setting)"
+    (let [s (state/set-os-color-scheme state/initial-state :dark)]
+      (is (= :dark (:os-color-scheme s)))
+      (is (= {} (:settings s)))
+      (is (nil? (:os-color-scheme (state/set-os-color-scheme s nil)))))))
 
 (deftest set-catalogs-test
   (testing "pre-selects sink tracks and computes capacity"

@@ -4,6 +4,7 @@
   dispatched to dapr.ui.events; formatting/predicates live in dapr.ui.format and
   dapr.domain.capacity."
   (:require [cljfx.api :as fx]
+            [clojure.java.io :as io]
             [clojure.string :as str]
             [dapr.device.file.views]
             [dapr.device.format :as device-format]
@@ -368,6 +369,18 @@
 
 ;; --- window assembly ---------------------------------------------------------
 
+(def ^:private theme-css
+  "Resolve a theme keyword (:dark/:light) to its stylesheet's external-form URL.
+  Memoized — the classpath resource is fixed for the run."
+  (memoize (fn [theme] (.toExternalForm (io/resource (str (name theme) ".css"))))))
+
+(defn- theme-stylesheets
+  "The `:stylesheets` vector for a scene, resolved from the persisted :theme setting
+  and the live OS colour scheme (see fmt/active-theme). Applied to every scene so
+  the whole UI re-styles when the theme setting or OS scheme changes."
+  [{:keys [settings os-color-scheme]}]
+  [(theme-css (fmt/active-theme (:theme settings :system) os-color-scheme))])
+
 (defn- menu-bar []
   {:fx/type :menu-bar
    :menus
@@ -404,6 +417,23 @@
                 (choice :delete "Delete from sink")
                 (choice :add-to-source "Copy back to source")]}))
 
+(defn- theme-options
+  "Radio group choosing the persisted :theme app setting (System / Light / Dark).
+  :system follows the OS colour scheme (see fmt/active-theme). Mutually exclusive
+  for the same reason as sink-only-options."
+  [theme]
+  (let [choice (fn [value label]
+                 {:fx/type   :radio-button
+                  :text      label
+                  :selected  (= theme value)
+                  :on-action {:event/type ::events/set-setting :key :theme :value value}})]
+    {:fx/type :v-box :spacing 6
+     :style   "-fx-border-color: gray; -fx-border-radius: 4; -fx-padding: 8;"
+     :children [{:fx/type :label :style "-fx-font-weight: bold;" :text "Theme"}
+                (choice :system "System")
+                (choice :light "Light")
+                (choice :dark "Dark")]}))
+
 (defn- settings-height
   "Preferred settings-window height for the current content, so the window grows
   and shrinks with what it shows. Built additively from the body's actual parts —
@@ -417,7 +447,7 @@
                  (+ 147                                       ; name/labels/add/save rows
                     (* 28 (max 1 (count (:roots editor))))    ; one row per root
                     (if browser (browser-panel-height browser) 0))
-                 (+ 190 (* 32 (count libraries))))]           ; library list + settings panel
+                 (+ 320 (* 32 (count libraries))))]           ; library list + settings panels
     (min (- (.getHeight (.getVisualBounds (Screen/getPrimary))) 60)
          (+ chrome body))))
 
@@ -426,7 +456,7 @@
   graph at all times; its visibility tracks :settings-open? in the state. Its
   height tracks the content (see settings-height); the body sits in a scroll-pane
   so it scrolls only once the window hits its screen-bounded maximum."
-  [{:keys [settings-open? libraries editor browser settings]}]
+  [{:keys [settings-open? libraries editor browser settings] :as state}]
   {:fx/type  :stage
    :showing  (boolean settings-open?)
    :modality :application-modal
@@ -436,6 +466,7 @@
    :on-close-request {:event/type ::events/settings-close}
    :scene
    {:fx/type :scene
+    :stylesheets (theme-stylesheets state)
     :root
     {:fx/type :v-box
      :spacing 10
@@ -449,7 +480,8 @@
                             {:fx/type :v-box :spacing 12
                              :children [(library-list libraries)
                                         (sink-only-options
-                                         (get settings :sink-only-handling :keep))]})}
+                                         (get settings :sink-only-handling :keep))
+                                        (theme-options (get settings :theme :system))]})}
                 {:fx/type :h-box :alignment :center-right
                  :children [{:fx/type :button :text "Close"
                              :on-action {:event/type ::events/settings-close}}]}]}}})
@@ -466,6 +498,7 @@
    :on-close-request {:event/type ::events/quit}
    :scene
    {:fx/type :scene
+    :stylesheets (theme-stylesheets state)
     :root
     {:fx/type :border-pane
      :top     (menu-bar)

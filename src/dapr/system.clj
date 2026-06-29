@@ -11,7 +11,9 @@
             [dapr.ui.events :as events]
             [dapr.ui.views :as views]
             [datascript.core :as d]
-            [integrant.core :as ig]))
+            [integrant.core :as ig])
+  (:import (javafx.application Platform)
+           (javafx.beans.value ChangeListener)))
 
 (defn config
   "Read the Integrant system configuration from resources/config.edn."
@@ -49,12 +51,39 @@
 (defmethod ig/halt-key! :dapr/state [_ state-atom]
   (reset! state-atom state/initial-state))
 
+(defn- color-scheme->kw
+  "Map a javafx.application.ColorScheme to :dark/:light (nil when unrecognized)."
+  [cs]
+  (case (str cs)
+    "DARK"  :dark
+    "LIGHT" :light
+    nil))
+
+(defn- watch-os-color-scheme!
+  "On the FX thread, read the OS colour scheme into state and add a listener so the
+  :system theme follows the OS live (see dapr.ui.format/active-theme). Best-effort:
+  on platforms/headless runs where Platform/getPreferences is unavailable it leaves
+  :os-color-scheme nil (the :system theme then falls back to light)."
+  [state-atom]
+  (Platform/runLater
+   (fn []
+     (try
+       (let [prefs   (Platform/getPreferences)
+             record! (fn [cs] (swap! state-atom state/set-os-color-scheme (color-scheme->kw cs)))]
+         (record! (.getColorScheme prefs))
+         (.addListener (.colorSchemeProperty prefs)
+                       (reify ChangeListener
+                         (changed [_ _ _ new-val] (record! new-val)))))
+       (catch Throwable _)))))
+
 (defmethod ig/init-key :dapr/renderer [_ {:keys [state-atom cache]}]
   (let [handler  (events/make-handler state-atom cache)
         renderer (fx/create-renderer
                   :middleware (fx/wrap-map-desc (fn [s] (views/root-view s)))
                   :opts {:fx.opt/map-event-handler handler})]
     (fx/mount-renderer state-atom renderer)
+    ;; Follow the OS colour scheme so the :system theme tracks it live.
+    (watch-os-color-scheme! state-atom)
     ;; Kick off the initial catalog load for any persisted default source/sink.
     (events/start! state-atom cache)
     {:renderer renderer :state-atom state-atom}))

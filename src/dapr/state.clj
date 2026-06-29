@@ -28,6 +28,7 @@
    :editor         nil    ; library being added/edited, or nil
    :browser        nil    ; folder browser, or nil
    :settings       {}     ; persisted app settings (theme, log dir, …); see dapr.cache
+   :os-color-scheme nil   ; OS-reported scheme (:dark/:light); drives the :system theme
    :status         :idle  ; :idle :scanning :planned :syncing :done :error
    :scan-gen       0      ; bumped per scan; lets a new scan supersede a running one
    :progress       nil    ; {:done n :total t}
@@ -171,6 +172,13 @@
   "Read app setting `k`, falling back to `default` (nil) when unset."
   ([state k] (setting state k nil))
   ([state k default] (get (:settings state) k default)))
+
+(defn set-os-color-scheme
+  "Record the OS-reported colour scheme (:dark/:light, or nil when unknown). Not a
+  persisted setting — it tracks the live OS preference so the :system theme can
+  follow it (see dapr.ui.format/active-theme)."
+  [state scheme]
+  (assoc state :os-color-scheme scheme))
 
 ;; --- settings modal ----------------------------------------------------------
 
