@@ -128,5 +128,4 @@
   (boolean (and plan (= status :planned)
                 (pos? (+ (get-in plan [:summary :add] 0)
                          (get-in plan [:summary :move] 0)
-                         (get-in plan [:summary :delete] 0)
-                         (get-in plan [:summary :add-to-source] 0))))))
+                         (get-in plan [:summary :delete] 0))))))
