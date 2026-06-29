@@ -86,6 +86,14 @@
 (defmethod dfs/root-path! :smb [uri-str]
   (resolve-root-path! uri-str))
 
+(defmethod dfs/available? :smb [uri-str]
+  ;; Resolving opens (or reuses) the authenticated FileSystem for the host, so an
+  ;; unreachable share or a connect/auth failure surfaces here and degrades to
+  ;; unavailable rather than throwing.
+  (try
+    (Files/isDirectory (resolve-root-path! uri-str) (make-array LinkOption 0))
+    (catch Exception _ false)))
+
 (defmethod dfs/dir-children! :smb [uri]
   (let [smb-shares? (smb-format/host-root? uri)
         keep?       (fn [^Path p]

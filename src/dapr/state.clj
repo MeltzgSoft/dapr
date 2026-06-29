@@ -15,6 +15,7 @@
    :store-path     nil    ; where libraries are persisted
    :source-id      nil
    :sink-id        nil
+   :library-availability {} ; library id -> bool; absent = not yet probed (treated available)
    :source-catalog {}     ; key -> track
    :sink-catalog   {}     ; key -> track
    :selected       #{}    ; set of selected track keys
@@ -58,6 +59,29 @@
       (update :libraries (fn [libs] (vec (remove #(= (:id %) id) libs))))
       (cond-> (= id (:source-id state)) (assoc :source-id nil)
               (= id (:sink-id state))   (assoc :sink-id nil))))
+
+;; --- library availability ----------------------------------------------------
+
+(defn set-library-availability
+  "Record the probed reachability of libraries as an id->bool map (see
+  dapr.ui.events/probe-availability!)."
+  [state availability]
+  (assoc state :library-availability (or availability {})))
+
+(defn clear-unavailable-selection
+  "Drop the source and/or sink selection when its library has been probed
+  unavailable (explicitly false in `availability`), invalidating any plan. Unprobed
+  libraries (absent from the map) are left selected. Used at launch so a persisted
+  default on an unreachable device isn't pre-selected, and on a manual refresh."
+  [state availability]
+  (let [src-bad? (and (:source-id state) (false? (get availability (:source-id state))))
+        snk-bad? (and (:sink-id state) (false? (get availability (:sink-id state))))]
+    (cond-> state
+      src-bad? (assoc :source-id nil
+                      :filter {:artist nil :album nil}
+                      :filter-search {:artist "" :album ""})
+      snk-bad? (assoc :sink-id nil)
+      (or src-bad? snk-bad?) (assoc :plan nil :status :idle))))
 
 ;; --- source / sink / selection ----------------------------------------------
 

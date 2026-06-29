@@ -91,20 +91,36 @@
 
 ;; --- sync workflow -----------------------------------------------------------
 
-(defn- library-combo [event-type value libraries]
+(defn- library-combo
+  "Source/sink picker. Libraries in `unavailable` (a set of names whose device was
+  probed unreachable) render greyed and disabled in the dropdown, so they can't be
+  chosen (a disabled list cell isn't selectable)."
+  [event-type value libraries unavailable]
   {:fx/type :combo-box
    :prompt-text "—"
    :items (mapv :name libraries)
    :value value
-   :on-value-changed {:event/type event-type}})
+   :on-value-changed {:event/type event-type}
+   :cell-factory {:fx/cell-type :list-cell
+                  :describe (fn [nm]
+                              (cond-> {:text nm}
+                                (contains? unavailable nm)
+                                (assoc :disable true :style "-fx-text-fill: gray;")))}})
 
-(defn- sync-bar [libraries source-id sink-id]
-  (let [name-of (fn [id] (:name (first (filter #(= (:id %) id) libraries))))]
+(defn- sync-bar [libraries source-id sink-id availability]
+  (let [name-of     (fn [id] (:name (first (filter #(= (:id %) id) libraries))))
+        unavailable (into #{} (comp (filter #(fmt/library-unavailable? availability (:id %)))
+                                    (map :name))
+                          libraries)]
     {:fx/type :h-box :spacing 8 :alignment :center-left
      :children [{:fx/type :label :text "Source"}
-                (library-combo ::events/select-source (name-of source-id) libraries)
+                (library-combo ::events/select-source (name-of source-id) libraries unavailable)
                 {:fx/type :label :text "Sink"}
-                (library-combo ::events/select-sink (name-of sink-id) libraries)]}))
+                (library-combo ::events/select-sink (name-of sink-id) libraries unavailable)
+                {:fx/type :button :text "↻ Refresh"
+                 :tooltip {:fx/type :tooltip
+                           :text "Re-check which libraries' devices are reachable"}
+                 :on-action {:event/type ::events/refresh-availability}}]}))
 
 (defn- capacity-bar
   "Capacity meter for the sink library `sink-name` (how full it would be after the
@@ -282,14 +298,14 @@
   "Top section of the workspace: the source/sink pickers, capacity meter, the
   track picker (which grows to fill the section), the action buttons and the plan
   summary."
-  [{:keys [libraries source-id sink-id capacity plan] :as state}]
+  [{:keys [libraries source-id sink-id capacity plan library-availability] :as state}]
   {:fx/type    :v-box
    :spacing    10
    :padding    12
    ;; Keep a floor on the sync area so dragging the divider all the way down can't
    ;; collapse it entirely.
    :min-height 200
-   :children   [(sync-bar libraries source-id sink-id)
+   :children   [(sync-bar libraries source-id sink-id library-availability)
                 (capacity-bar capacity (some #(when (= (:id %) sink-id) (:name %)) libraries))
                 ;; The filter browser and the track table share a draggable
                 ;; vertical split, so growing the table never squeezes the browser

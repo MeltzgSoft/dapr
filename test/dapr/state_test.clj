@@ -66,6 +66,32 @@
       (is (nil? (:source-id s)))
       (is (= "b" (:sink-id s))))))
 
+(deftest library-availability-test
+  (testing "set-library-availability records the id->bool map (nil -> {})"
+    (is (= {1 true 2 false}
+           (:library-availability (state/set-library-availability state/initial-state {1 true 2 false}))))
+    (is (= {} (:library-availability (state/set-library-availability state/initial-state nil)))))
+  (testing "clear-unavailable-selection drops only explicitly-unavailable selections"
+    (let [s (assoc state/initial-state
+                   :source-id 1 :sink-id 2
+                   :plan {:actions []} :status :planned
+                   :filter {:artist "A" :album "B"})]
+      (testing "an available source + unavailable sink clears just the sink and the plan"
+        (let [s2 (state/clear-unavailable-selection s {1 true 2 false})]
+          (is (= 1 (:source-id s2)))
+          (is (nil? (:sink-id s2)))
+          (is (nil? (:plan s2)))
+          (is (= :idle (:status s2)))))
+      (testing "an unavailable source is cleared and its column-browser filter reset"
+        (let [s2 (state/clear-unavailable-selection s {1 false 2 true})]
+          (is (nil? (:source-id s2)))
+          (is (= {:artist nil :album nil} (:filter s2)))))
+      (testing "unprobed (absent) selections are left intact, plan untouched"
+        (let [s2 (state/clear-unavailable-selection s {})]
+          (is (= 1 (:source-id s2)))
+          (is (= 2 (:sink-id s2)))
+          (is (= {:actions []} (:plan s2))))))))
+
 (deftest settings-test
   (testing "set-settings replaces the whole map; nil becomes empty"
     (is (= {:theme :dark} (:settings (state/set-settings state/initial-state {:theme :dark}))))

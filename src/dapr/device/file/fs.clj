@@ -4,13 +4,18 @@
             [dapr.fs.paths :as paths])
   (:import (java.io File)
            (java.net URI)
-           (java.nio.file Paths)))
+           (java.nio.file Files LinkOption Paths)))
 
 (defmethod dfs/root-path! :file [uri-str]
   (Paths/get (URI. ^String uri-str)))
 
 (defmethod dfs/dir-children! :file [uri]
   (dfs/directory-children! (dfs/root-path! uri) dfs/directory?))
+
+(defmethod dfs/available? :file [uri-str]
+  (try
+    (Files/isDirectory (dfs/root-path! uri-str) (make-array LinkOption 0))
+    (catch Exception _ false)))
 
 (defn local-places!
   "Top-level local browsing locations: each filesystem root plus the user's home

@@ -8,6 +8,7 @@
             [dapr.device.events :as device-events]
             [dapr.device.file.events]
             [dapr.device.format :as device]
+            [dapr.device.fs :as dfs]
             [dapr.device.mtp.events]
             [dapr.device.smb.events]
             [dapr.domain.library :as lib]
@@ -252,13 +253,34 @@
                                       (state/append-log (str "Sync failed: " (error-summary t)))
                                       (state/append-log (error-detail t)))))))))
 
-(defn start!
-  "Once the UI is mounted, kick off the initial catalog load for any persisted
-  default source (pre-selected at state init), so a launch with a default source
-  lands with its tracks shown — and ready to sync when a default sink is set too."
+(defn- probe-availability!
+  "Probe each library's device reachability off the JFX thread and record an
+  id->bool map in state (dfs/available? per root; a library is available when all
+  its roots resolve to an existing directory). SMB/MTP probes may block, hence the
+  background thread at the call sites."
+  [state-atom]
+  (let [libs  (:libraries @state-atom)
+        avail (into {} (map (fn [l] [(:id l) (boolean (and (seq (:roots l))
+                                                           (every? dfs/available? (:roots l))))]))
+                    libs)]
+    (swap! state-atom state/set-library-availability avail)))
+
+(defn- refresh-availability!
+  "Re-probe availability, then drop any source/sink selection that has become
+  unavailable (and reload the remaining catalogs). Used at launch and on the
+  manual refresh action."
   [state-atom cache]
+  (probe-availability! state-atom)
+  (swap! state-atom (fn [s] (state/clear-unavailable-selection s (:library-availability s))))
   (when (:source-id @state-atom)
-    (future (reload-catalogs! state-atom cache))))
+    (reload-catalogs! state-atom cache)))
+
+(defn start!
+  "Once the UI is mounted, probe library availability, drop any pre-selected
+  default whose device is unreachable, then load the source's tracks if a source
+  remains selected (see reload-catalogs!)."
+  [state-atom cache]
+  (future (refresh-availability! state-atom cache)))
 
 (def ^:private mixed-device-msg
   "A library's roots must all live on one device — remove the existing roots first to switch device.")
@@ -294,7 +316,8 @@
       ::library-delete (do (cache/delete-library! conn (:id event))
                            (cache/snapshot! conn (:path cache))
                            (swap! state-atom state/delete-library (:id event))
-                           (refresh-libraries! state-atom conn))
+                           (refresh-libraries! state-atom conn)
+                           (future (probe-availability! state-atom)))
       ;; Mark/clear a library as the default source or sink (applied at next
       ;; launch, see start!). The current session's selection is left as-is.
       ::library-default (do (cache/set-default! conn (:role event) (:id event))
@@ -339,7 +362,8 @@
           (do (cache/upsert-library! conn library)
               (cache/snapshot! conn (:path cache))
               (refresh-libraries! state-atom conn)
-              (swap! state-atom state/cancel-editor))
+              (swap! state-atom state/cancel-editor)
+              (future (probe-availability! state-atom)))
           (swap! state-atom state/append-log
                  "Library needs a name and at least one file://, mtp:// or smb:// root.")))
       ::editor-cancel (swap! state-atom state/cancel-editor)
@@ -359,6 +383,7 @@
       ::filter-album  (swap! state-atom state/set-filter-album (filter-value (:fx/event event)))
       ::filter-search-artist (swap! state-atom state/set-filter-search :artist (:fx/event event))
       ::filter-search-album  (swap! state-atom state/set-filter-search :album (:fx/event event))
+      ::refresh-availability (future (refresh-availability! state-atom cache))
       ::preview       (future (run-preview! state-atom))
       ::sync          (future (run-sync! state-atom cache))
       ::quit          (do (Platform/exit) (System/exit 0))

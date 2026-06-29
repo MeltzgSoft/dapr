@@ -14,11 +14,20 @@
   "Immediate sub-directories directly under `uri`, as browser entry maps."
   device/device-type)
 
+(defmulti available?
+  "True when the device/share backing root `uri-str` is currently reachable and
+  the root resolves to an existing directory. Probes I/O (a local stat, an SMB
+  connect, an MTP open), so it may block and is meant to run off the UI thread;
+  it must never throw — an unreachable or erroring probe returns false."
+  device/device-type)
+
 (defmethod root-path! :default [uri]
   (throw (ex-info (str "Unsupported root URI: " uri) {:uri uri})))
 
 (defmethod dir-children! :default [uri]
   (throw (ex-info (str "Unsupported browse URI: " uri) {:uri uri})))
+
+(defmethod available? :default [_] false)
 
 (defn directory-children!
   "List child paths under `root`, keeping only entries accepted by `keep?` and
