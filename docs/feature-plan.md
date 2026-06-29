@@ -6,79 +6,57 @@ Update the checkboxes and **Status** lines as work lands.
 
 ---
 
-## ⚠️ CURRENT SESSION HANDOFF (read this first to continue)
+## ✅ CURRENT SESSION HANDOFF (feature 1 COMPLETE)
 
-**Branch in progress: `feat/sink-only-tracks` (feature 1) — INCOMPLETE / tests RED.**
+**Branch: `feat/sink-only-tracks` (feature 1) — DONE. Unit + integration green;
+lint + cljfmt clean.**
 
-### Branch/stack state (all pushed to `origin`)
+### Branch/stack state
 - `feat/app-settings` — ✅ done (off `main`).
 - `feat/source-only-tracklist` — ✅ done (off `main`).
 - `feat/library-availability` — ✅ done (stacked on `feat/source-only-tracklist`).
-- `feat/sink-only-tracks` — 🚧 **in progress**, stacked on `feat/library-availability`
-  with `feat/app-settings` merged in (so it has settings + source-only + availability).
+- `feat/sink-only-tracks` — ✅ **done**, stacked on `feat/library-availability`
+  with `feat/app-settings` merged in (settings + source-only + availability).
 - Merge order when landing: app-settings → source-only-tracklist → library-availability
   → sink-only-tracks.
 
-### What's DONE on `feat/sink-only-tracks` (committed as WIP)
-- `domain/plan.clj`: `selection-plan` now takes `:sink-only-handling`
-  (`:keep` default / `:delete` / `:add-to-source`) + `:source-roots`; helpers
-  `sink-only-keys`, `sink-only-kept?`, `source-add-actions`; emits `:add-to-source`
-  actions and protects sink-only tracks from deletion under keep/add-to-source.
-  `summary` gains `:add-to-source` + `:bytes-to-source`.
-- `sync.clj`: `library-roots!` (generic), `apply-source-adds-to-cache!` (presence on
-  the **source** for copied-back tracks), `execute-plan!` handles `:add-to-source`
-  (src→target copy; result map gains `:add-to-source`), `build-plan!` threads
-  `:sink-only-handling`/`:source-roots`.
-
-### What's LEFT to do (in order)
-1. **`ui/events.clj`**
-   - `run-preview!`: read `handling (state/setting s :sink-only-handling :keep)`;
-     `src-roots (when (= handling :add-to-source) (sync/library-roots! src))`; pass
-     `:sink-only-handling`/`:source-roots` to both the `plan/selection-plan` call and
-     the `sync/build-plan!` fallback.
-   - `run-sync!`: destructure `sink-catalog`; after `apply-plan-to-cache!` call
-     `(sync/apply-source-adds-to-cache! conn source-id sink-catalog actions)`; include
-     the `:add-to-source` count in the "Done." log line.
-2. **`ui/format.clj`**
-   - `can-sync?`: add `(get-in plan [:summary :add-to-source] 0)` to the positive sum.
-   - `plan-summary-text`: append `· To source N (bytes)` when `:add-to-source` > 0
-     (conditional like the existing `· Blocked N`).
-3. **`ui/views.clj`**
-   - `track-rows`: row over `(merge sink-catalog source-catalog)` (union); add
-     `:in-source?`; read `handling`; `lock-sink-only?` = handling ∈ {:keep
-     :add-to-source}; sink-only rows → `:on?` true + `:disable` true when locked.
-   - Replace `text-column`/`size-column` with a `track-column` helper using
-     `:cell-value-factory identity` + a `:comparator` (sort by field) + a
-     `:describe` that renders the field and adds `:style "-fx-text-fill: red;"` when
-     `(not (:in-source? row))`. Delete the now-unused `text-column`/`size-column`.
-   - Settings modal: add a `sink-only-options` radio group (Keep / Delete /
-     Add-to-source) bound to `:sink-only-handling`, dispatching `::events/set-setting
-     {:key :sink-only-handling :value …}`; show it in `settings-stage` non-editor
-     content (and bump `settings-height` by ~150). Thread `settings` into
-     `settings-stage`.
-4. **Tests** (currently RED — `plan_test` encodes the OLD default-delete behavior):
-   - `domain/plan_test`: update `selection-plan-test` (default `:keep` now KEEPS the
-     sink-only `d.mp3` — no delete action) and `summary-test` (pass
-     `:sink-only-handling :delete` to keep the delete numbers, assert the new
-     `:add-to-source`/`:bytes-to-source` keys). Add a `sink-only-handling-test`
-     covering keep/delete/add-to-source (+ blocked when no source root fits).
-   - `sync_test`: add `apply-source-adds-to-cache-test` (presence lands on source
-     with sink tags).
-   - `ui/format_test`: add a `can-sync?` case for an add-to-source-only plan.
-5. Run `clojure -M:test`, `clojure -M:integration`, `clj-kondo`, `cljfmt`; smoke
-   `clojure -M:run` (FX graph hangs a bare `require`, so don't compile-check by
-   requiring views — rely on lint + tests). Then commit (replace the WIP commit or
-   add a follow-up) and update this section + the feature-1 block below.
+### What landed this session (UI/events/format/tests — on top of the WIP planner+sync)
+- `ui/events.clj`: `run-preview!` reads `:sink-only-handling` from settings and
+  passes it + `:source-roots` (only computed for `:add-to-source`) to both the
+  `plan/selection-plan` call and the `sync/build-plan!` fallback. `run-sync!`
+  destructures `sink-catalog`, calls `sync/apply-source-adds-to-cache!` after
+  `apply-plan-to-cache!`, and logs the `:add-to-source` count.
+- `ui/format.clj`: `can-sync?` counts `:add-to-source`; `plan-summary-text` appends
+  `· To source N (bytes)` when positive.
+- `ui/views.clj`: `track-rows` now rows the **union** of source+sink catalogs with
+  `:in-source?`; sink-only rows lock on (`:on? true`/`:disable true`) under
+  `:keep`/`:add-to-source`. New `track-column` helper (`:cell-value-factory
+  identity` + per-field `:comparator` + red `:style` for `:in-source? false`)
+  replaces `text-column`/`size-column`. Settings modal gains a `sink-only-options`
+  radio group (Keep / Delete / Copy-back) bound to `:sink-only-handling`.
+- Tests: `plan_test` (`selection-plan-test` keep-by-default, `summary-test` with
+  `:delete`, new `sink-only-handling-test`), `sync_test`
+  (`apply-source-adds-to-cache-test`), `format_test` (add-to-source `can-sync?` +
+  `plan-summary-text` cases), and `sync_integration_test` (op-count map shape +
+  new end-to-end `sink-only-add-to-source-test` proving the real file copy-back).
 
 ### Gotchas learned
-- The DEFAULT behavior CHANGES: previously every unselected sink track was deleted;
-  now sink-only tracks default to `:keep`. That's why `plan_test` goes red until
-  updated — it's expected, not a regression.
+- The DEFAULT behavior CHANGED: previously every unselected sink track was deleted;
+  now sink-only tracks default to `:keep`. This rippled into `plan_test` AND
+  `sync_integration_test` (which now pass `:sink-only-handling :delete` to keep
+  exercising the delete path). `execute-plan!`'s result map now always carries
+  `:add-to-source` (so `{:add 0 :delete 0}` → `{:add 0 :add-to-source 0 :delete 0}`).
 - Clojure fns implement `java.util.Comparator`, so a 2-arg fn works as a cljfx
   `:comparator`. Using `:cell-value-factory identity` lets a cell colour itself by
   the whole row while `:comparator` preserves per-field sorting.
+- The integration suite shares a classpath with several **untracked** WIP tag files
+  (`src/dapr/fs/tags.clj` etc.) that don't yet compile (`No such var: tags/clean`);
+  they break `clojure -M:integration` until that separate feature lands. They are
+  unrelated to this branch — set them aside to get a clean integration run.
 - `docs/feature-plan.md` is otherwise kept untracked to follow across branches, but
-  it is committed on `feat/sink-only-tracks` for this handoff.
+  it is committed on `feat/sink-only-tracks`.
+
+### Next up (suggested order): `feat/theming` (6) → `feat/logging` (2) → … (see below)
 
 ---
 
@@ -139,23 +117,22 @@ Today `track-rows` only iterates `source-catalog`, so sink-only tracks are
 invisible; `selection-plan` silently deletes any unselected sink track.
 
 - [x] **Setting** `:sink-only-handling` ∈ `{:keep :delete :add-to-source}`,
-      **default `:keep`**. (Wired in the planner; UI control still TODO.)
-- [ ] `ui/views.clj` `track-rows`: row over the **union** of source+sink keys;
-      flag sink-only rows (`:in-source? false`). — TODO
-- [ ] Render sink-only rows **red** via a `track-column` helper. — TODO
-- [ ] `check-column`: for `:keep`/`:add-to-source`, force `:on? true` + `:disable
-      true`. — TODO (row computes it; track-rows wiring pending)
+      **default `:keep`**. Wired in the planner and surfaced as a settings radio.
+- [x] `ui/views.clj` `track-rows`: rows the **union** of source+sink keys; flags
+      sink-only rows (`:in-source? false`).
+- [x] Render sink-only rows **red** via a `track-column` helper.
+- [x] `check-column`: for `:keep`/`:add-to-source`, sink-only rows force `:on? true`
+      + `:disable true` (computed in `track-rows`).
 - [x] `:add-to-source`: planner emits `:add-to-source`; `sync/execute-plan!` does a
       real **file copy sink-root → source-root**, and
       `sync/apply-source-adds-to-cache!` adds a presence on the source library.
 - [x] `domain/plan.clj`: sink-only handling branches (keep→retain, delete→delete,
       add-to-source→copy + retain).
-- [ ] Settings panel radio group + the `::set-setting` handler already exists. — TODO
+- [x] Settings panel `sink-only-options` radio group, dispatching `::set-setting`.
 
 **Notes:** sequence AFTER feature 5 (both touch `track-rows`/catalog union).
-**Status:** 🚧 **IN PROGRESS** — planner + sync layers done & committed (WIP),
-UI/events/format/tests pending. See the **CURRENT SESSION HANDOFF** section at the
-top for the exact remaining steps. Tests are RED until the plan_test updates land.
+**Status:** ✅ **DONE** on `feat/sink-only-tracks` — planner + sync + UI/events/
+format complete; unit + integration green, lint + cljfmt clean.
 
 ---
 

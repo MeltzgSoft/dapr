@@ -199,18 +199,24 @@
   empty (e.g. the selection scan is still in flight)."
   [state-atom]
   (let [{:keys [source-catalog sink-catalog selected] :as s} @state-atom
-        src (state/library-by-id s (:source-id s))
-        snk (state/library-by-id s (:sink-id s))]
+        src       (state/library-by-id s (:source-id s))
+        snk       (state/library-by-id s (:sink-id s))
+        handling  (state/setting s :sink-only-handling :keep)
+        src-roots (when (= handling :add-to-source) (sync/library-roots! src))]
     (swap! state-atom (fn [s] (-> s
                                   (state/set-status :scanning)
                                   (state/append-log "Computing plan…"))))
     (try
       (let [actions (if (and (seq source-catalog) (seq sink-catalog))
-                      (plan/selection-plan {:source-catalog source-catalog
-                                            :sink-catalog   sink-catalog
-                                            :selected       selected
-                                            :sink-roots     (sync/sink-roots! snk)})
-                      (sync/build-plan! src snk selected))
+                      (plan/selection-plan {:source-catalog     source-catalog
+                                            :sink-catalog       sink-catalog
+                                            :selected           selected
+                                            :sink-roots         (sync/sink-roots! snk)
+                                            :sink-only-handling handling
+                                            :source-roots       src-roots})
+                      (sync/build-plan! src snk selected
+                                        {:sink-only-handling handling
+                                         :source-roots       src-roots}))
             summ    (plan/summary actions)]
         (swap! state-atom (fn [s] (-> s
                                       (state/set-plan actions summ)
@@ -223,7 +229,7 @@
                                       (state/append-log (error-detail t)))))))))
 
 (defn- run-sync! [state-atom {:keys [conn path]}]
-  (let [{:keys [source-catalog source-id sink-id] :as s0} @state-atom
+  (let [{:keys [source-catalog sink-catalog source-id sink-id] :as s0} @state-atom
         actions (get-in s0 [:plan :actions])]
     (swap! state-atom (fn [s] (-> s
                                   (state/set-status :syncing)
@@ -236,6 +242,8 @@
         ;; Update the sink's cache entry directly from the executed plan, so a
         ;; sync needs no re-walk; then refresh the catalogs from the cache.
         (sync/apply-plan-to-cache! conn sink-id source-catalog actions)
+        ;; Register copied-back sink-only tracks (:add-to-source) on the source.
+        (sync/apply-source-adds-to-cache! conn source-id sink-catalog actions)
         (cache/snapshot! conn path)
         (let [s   @state-atom
               src (state/library-by-id s source-id)
@@ -245,8 +253,9 @@
                                       (state/set-status :done)
                                       (state/set-progress nil)
                                       (state/append-log
-                                       (format "Done. Added %d, deleted %d."
-                                               (:add result) (:delete result)))))))
+                                       (format "Done. Added %d, deleted %d, to source %d."
+                                               (:add result) (:delete result)
+                                               (:add-to-source result)))))))
       (catch Throwable t
         (swap! state-atom (fn [s] (-> s
                                       (state/set-error (error-summary t))

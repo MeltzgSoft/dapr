@@ -92,6 +92,9 @@
                  (:add summary) (human-bytes (:bytes-added summary))
                  (:delete summary) (human-bytes (:bytes-freed summary))
                  (:skip summary))
+         (when (pos? (:add-to-source summary 0))
+           (format " · To source %d (%s)"
+                   (:add-to-source summary) (human-bytes (:bytes-to-source summary))))
          (when (pos? (:blocked summary 0))
            (format " · Blocked %d" (:blocked summary))))
     "No plan yet."))
@@ -114,4 +117,5 @@
   (boolean (and plan (= status :planned)
                 (pos? (+ (get-in plan [:summary :add] 0)
                          (get-in plan [:summary :move] 0)
-                         (get-in plan [:summary :delete] 0))))))
+                         (get-in plan [:summary :delete] 0)
+                         (get-in plan [:summary :add-to-source] 0))))))

@@ -65,6 +65,10 @@
     (is (= "Add 2 (2.0 KB) · Delete 1 (1.0 KB) · Skip 3"
            (fmt/plan-summary-text {:add 2 :bytes-added 2048
                                    :delete 1 :bytes-freed 1024 :skip 3 :blocked 0}))))
+  (testing "appends a to-source count when present"
+    (is (= "Add 0 (0 B) · Delete 0 (0 B) · Skip 0 · To source 2 (1.0 KB)"
+           (fmt/plan-summary-text {:add 0 :bytes-added 0 :delete 0 :bytes-freed 0 :skip 0
+                                   :add-to-source 2 :bytes-to-source 1024}))))
   (testing "appends a blocked count when present"
     (is (= "Add 0 (0 B) · Delete 0 (0 B) · Skip 0 · Blocked 2"
            (fmt/plan-summary-text {:add 0 :bytes-added 0 :delete 0
@@ -83,6 +87,9 @@
 (deftest can-sync?-test
   (testing "true when a plan with work is ready"
     (is (true? (fmt/can-sync? {:status :planned :plan {:summary {:add 1 :move 0 :delete 0}}}))))
+  (testing "true for an add-to-source-only plan"
+    (is (true? (fmt/can-sync? {:status :planned
+                               :plan {:summary {:add 0 :move 0 :delete 0 :add-to-source 1}}}))))
   (testing "false when the plan is a no-op"
     (is (false? (fmt/can-sync? {:status :planned :plan {:summary {:add 0 :move 0 :delete 0}}}))))
   (testing "false when not yet planned"

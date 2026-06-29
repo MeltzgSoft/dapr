@@ -139,30 +139,43 @@
                :style (if (and sink-name (fmt/over-capacity? capacity)) "-fx-text-fill: red;" "")}]})
 
 (defn- track-rows
-  "Resolve the source catalog into a sorted vector of row maps for the track
-  table, one per track: {:key :artist :album :title :size :sink-rel :on?
-  :disable}. Rows sort by artist/album/title (the table lets the user re-sort by
-  any column). Capacity is checked in constant time per row against the
-  selection's remaining free bytes (computed once from :capacity), so this stays
-  O(n) even for libraries of many thousands of tracks — see
+  "Resolve the union of the source and sink catalogs into a sorted vector of row
+  maps for the track table, one per track: {:key :artist :album :title :size
+  :sink-rel :in-source? :on? :disable}. Rows sort by artist/album/title (the table
+  lets the user re-sort by any column). Capacity is checked in constant time per
+  row against the selection's remaining free bytes (computed once from :capacity),
+  so this stays O(n) even for libraries of many thousands of tracks — see
   dapr.domain.capacity/row-fits?. Only tracks matching the column-browser filter
-  are rowed (see filter-browser); selection/capacity still span the whole catalog."
-  [{:keys [source-catalog sink-catalog selected capacity filter]}]
-  (let [free (:free capacity)]
-    (->> (vals (fmt/filter-catalog source-catalog filter))
+  are rowed (see filter-browser); selection/capacity still span the whole catalog.
+
+  Tracks present on the sink but absent from the source are flagged
+  `:in-source? false` (rendered red by track-column). Under :keep / :add-to-source
+  handling they are retained regardless of selection, so their checkbox is locked
+  on (`:on? true`, `:disable true`); under :delete the checkbox spares them from
+  deletion when ticked."
+  [{:keys [source-catalog sink-catalog selected capacity filter settings]}]
+  (let [free     (:free capacity)
+        handling (get settings :sink-only-handling :keep)
+        locked?  (contains? #{:keep :add-to-source} handling)]
+    (->> (vals (fmt/filter-catalog (merge sink-catalog source-catalog) filter))
          (sort-by (juxt :artist :album :title :rel))
          (mapv (fn [t]
-                 (let [k   (:key t)
-                       on? (contains? selected k)]
-                   {:key      k
-                    :artist   (:artist t)
-                    :album    (:album t)
-                    :title    (:title t)
-                    :size     (:size t)
-                    :sink-rel (:rel (get sink-catalog k))
-                    :on?      on?
-                    :disable  (and (not on?)
-                                   (not (cap/row-fits? k (:size t) selected sink-catalog free)))}))))))
+                 (let [k          (:key t)
+                       in-source? (contains? source-catalog k)
+                       on?        (contains? selected k)]
+                   {:key        k
+                    :artist     (:artist t)
+                    :album      (:album t)
+                    :title      (:title t)
+                    :size       (:size t)
+                    :sink-rel   (:rel (get sink-catalog k))
+                    :in-source? in-source?
+                    :on?        (if (and (not in-source?) locked?) true on?)
+                    :disable    (cond
+                                  (not in-source?) locked?
+                                  on?              false
+                                  :else            (not (cap/row-fits?
+                                                         k (:size t) selected sink-catalog free)))}))))))
 
 (defn- check-column
   "Leading selection column: a fixed-width checkbox per row, disabled when adding
@@ -189,21 +202,28 @@
                                                  {:event/type ::events/toggle-track :key (:key row)}}}
                                       {}))}})
 
-(defn- text-column [text key width]
-  {:fx/type :table-column :text text :pref-width width :cell-value-factory key})
-
-(defn- size-column []
+(defn- track-column
+  "A track-table data column carrying the whole row as its cell value
+  (`:cell-value-factory identity`) so a cell can colour itself by the row while the
+  column still sorts by its own `field`. `field` selects the displayed value and
+  `render` formats it to a string (nil → blank); the `:comparator` orders rows by
+  `field` (clojure.core/compare handles nil and numbers). Sink-only rows
+  (`:in-source? false`) render red."
+  [text field width render]
   {:fx/type            :table-column
-   :text               "Size"
-   :pref-width         90
-   ;; Cell value is the raw byte count so the column sorts numerically; the cell
-   ;; itself renders it human-readably.
-   :cell-value-factory :size
+   :text               text
+   :pref-width         width
+   :cell-value-factory identity
+   :comparator         (fn [a b] (compare (field a) (field b)))
    :cell-factory       {:fx/cell-type :table-cell
-                        ;; Empty cells have a nil size — leave them blank rather
-                        ;; than rendering "0 B".
-                        :describe (fn [size]
-                                    {:text (when (some? size) (fmt/human-bytes size))})}})
+                        ;; A recycled cell can transiently describe a nil row; the
+                        ;; blank {} description keeps it from rendering garbage.
+                        :describe (fn [row]
+                                    (if row
+                                      (cond-> {:text (render (field row))}
+                                        (not (:in-source? row))
+                                        (assoc :style "-fx-text-fill: red;"))
+                                      {}))}})
 
 (defn- filter-column
   "One column of the iTunes-style browser: a header (with a count), a search field
@@ -257,11 +277,11 @@
    :column-resize-policy :constrained
    :items                (track-rows state)
    :columns              [(check-column)
-                          (text-column "Artist" :artist 160)
-                          (text-column "Album" :album 160)
-                          (text-column "Title" :title 200)
-                          (size-column)
-                          (text-column "On sink" :sink-rel 160)]})
+                          (track-column "Artist" :artist 160 identity)
+                          (track-column "Album" :album 160 identity)
+                          (track-column "Title" :title 200 identity)
+                          (track-column "Size" :size 90 #(when (some? %) (fmt/human-bytes %)))
+                          (track-column "On sink" :sink-rel 160 identity)]})
 
 (defn- progress-bar [progress]
   {:fx/type    :progress-bar
@@ -364,6 +384,26 @@
   [browser]
   (+ 74 (device-views/browser-height browser)))
 
+(defn- sink-only-options
+  "Radio group choosing how tracks that are on the sink but not the source are
+  treated on sync — the persisted :sink-only-handling app setting. Each choice
+  dispatches ::set-setting; the buttons are mutually exclusive because only the one
+  matching `handling` renders selected (re-render deselects the others)."
+  [handling]
+  (let [choice (fn [value label]
+                 {:fx/type   :radio-button
+                  :text      label
+                  :selected  (= handling value)
+                  :on-action {:event/type ::events/set-setting
+                              :key :sink-only-handling :value value}})]
+    {:fx/type :v-box :spacing 6
+     :style   "-fx-border-color: gray; -fx-border-radius: 4; -fx-padding: 8;"
+     :children [{:fx/type :label :style "-fx-font-weight: bold;"
+                 :text "Tracks on the sink but not the source"}
+                (choice :keep "Keep on sink")
+                (choice :delete "Delete from sink")
+                (choice :add-to-source "Copy back to source")]}))
+
 (defn- settings-height
   "Preferred settings-window height for the current content, so the window grows
   and shrinks with what it shows. Built additively from the body's actual parts —
@@ -377,7 +417,7 @@
                  (+ 147                                       ; name/labels/add/save rows
                     (* 28 (max 1 (count (:roots editor))))    ; one row per root
                     (if browser (browser-panel-height browser) 0))
-                 (+ 40 (* 32 (count libraries))))]            ; library list
+                 (+ 190 (* 32 (count libraries))))]           ; library list + settings panel
     (min (- (.getHeight (.getVisualBounds (Screen/getPrimary))) 60)
          (+ chrome body))))
 
@@ -386,7 +426,7 @@
   graph at all times; its visibility tracks :settings-open? in the state. Its
   height tracks the content (see settings-height); the body sits in a scroll-pane
   so it scrolls only once the window hits its screen-bounded maximum."
-  [{:keys [settings-open? libraries editor browser]}]
+  [{:keys [settings-open? libraries editor browser settings]}]
   {:fx/type  :stage
    :showing  (boolean settings-open?)
    :modality :application-modal
@@ -406,7 +446,10 @@
                  :fit-to-width true
                  :content (if editor
                             (editor-panel editor browser)
-                            (library-list libraries))}
+                            {:fx/type :v-box :spacing 12
+                             :children [(library-list libraries)
+                                        (sink-only-options
+                                         (get settings :sink-only-handling :keep))]})}
                 {:fx/type :h-box :alignment :center-right
                  :children [{:fx/type :button :text "Close"
                              :on-action {:event/type ::events/settings-close}}]}]}}})
