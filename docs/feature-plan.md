@@ -56,7 +56,9 @@ lint + cljfmt clean.**
 - `docs/feature-plan.md` is otherwise kept untracked to follow across branches, but
   it is committed on `feat/sink-only-tracks`.
 
-### Next up (suggested order): `feat/theming` (6) → `feat/logging` (2) → … (see below)
+### Next up: `feat/theming` (6) is now also ✅ DONE (stacked on this branch).
+Remaining order: `feat/logging` (2) → `feat/shift-select` (8) →
+`ci/release-uberjar` (9). Spikes (3, 4) anytime. (See per-feature blocks below.)
 
 ---
 
@@ -204,16 +206,25 @@ Artist / AlbumName / Name) — potentially cheap vs. reading file bytes.
 ---
 
 ## 6. `feat/theming` — dark / light / system
-- [ ] `resources/dark.css` + `resources/light.css` (style JavaFX controls).
-- [ ] **Setting** `:theme` ∈ `{:dark :light :system}`, persisted.
-- [ ] `ui/views.clj`: add `:stylesheets` to each `:scene` (main + settings) from
-      the active theme.
-- [ ] **System detection:** JavaFX `27-ea` exposes
-      `Platform.getPreferences().colorSchemeProperty()` — read for `:system` and
-      add a listener in `system.clj` to re-render on OS theme change.
-- [ ] Settings UI: theme chooser.
+- [x] `resources/dark.css` + `resources/light.css` (style JavaFX controls via
+      Modena's `-fx-base`/`-fx-background`/`-fx-control-inner-background` plus
+      explicit table/list/text rules). On the classpath (`:paths` has `resources`).
+- [x] **Setting** `:theme` ∈ `{:dark :light :system}` (default `:system`), persisted
+      via the existing `::set-setting` seam.
+- [x] `ui/views.clj`: `theme-stylesheets` adds `:stylesheets` to each `:scene` (main
+      + settings) from the active theme; `fmt/active-theme` (pure) resolves
+      setting+OS → `:dark`/`:light`. Memoized resource→external-form lookup.
+- [x] **System detection:** `system.clj` `watch-os-color-scheme!` reads
+      `Platform.getPreferences().getColorScheme()` on the FX thread and adds a
+      `colorSchemeProperty` listener that swaps `state/:os-color-scheme`; the
+      renderer re-renders on the state change. Best-effort (try/catch → nil ⇒
+      `:system` falls back to light) so it degrades on platforms lacking the API.
+- [x] Settings UI: `theme-options` radio group (System / Light / Dark).
+- [x] Tests: `state_test` (`set-os-color-scheme`), `format_test` (`active-theme`).
+      Unit green; lint + cljfmt clean.
 
-**Status:** not started
+**Notes:** stacked on `feat/sink-only-tracks` (both edit `views.clj` scenes + the
+settings modal). **Status:** ✅ **DONE** on `feat/theming`.
 
 ---
 

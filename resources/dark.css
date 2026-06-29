@@ -1,0 +1,62 @@
+/* Dark theme for Dapr. JavaFX's Modena base derives most control colours from
+ * -fx-base (and text fill from its luminance), so a dark base cascades through
+ * buttons, combos, menus, the table, etc.; the explicit rules below cover the few
+ * surfaces Modena doesn't tint from -fx-base alone. */
+
+.root {
+    -fx-base: #3c3f41;
+    -fx-background: #2b2b2b;
+    -fx-control-inner-background: #313335;
+    -fx-control-inner-background-alt: #3a3d3f;
+    -fx-accent: #2675c2;
+    -fx-focus-color: #4a90d9;
+    -fx-faint-focus-color: #4a90d922;
+    -fx-text-background-color: #d6d6d6;
+    -fx-text-fill: #d6d6d6;
+}
+
+.label,
+.menu-bar .label,
+.radio-button .text,
+.check-box .text,
+.toggle-button {
+    -fx-text-fill: #d6d6d6;
+}
+
+/* Text input + activity log */
+.text-field,
+.text-area,
+.text-area .content {
+    -fx-text-fill: #d6d6d6;
+    -fx-prompt-text-fill: #8a8a8a;
+    -fx-control-inner-background: #313335;
+}
+
+/* Table + list (track table, column browser, library combos) */
+.table-view,
+.list-view {
+    -fx-background-color: #2b2b2b;
+    -fx-control-inner-background: #313335;
+    -fx-control-inner-background-alt: #34373a;
+}
+
+.table-view .column-header,
+.table-view .column-header-background,
+.table-view .filler {
+    -fx-background-color: #3c3f41;
+}
+
+.table-view .column-header .label {
+    -fx-text-fill: #d6d6d6;
+}
+
+.table-row-cell:selected,
+.list-cell:selected {
+    -fx-background-color: -fx-accent;
+    -fx-text-fill: white;
+}
+
+/* Borders Dapr draws inline as "gray" read fine on dark, but soften them. */
+.split-pane {
+    -fx-background-color: #2b2b2b;
+}
