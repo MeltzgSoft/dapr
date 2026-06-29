@@ -1,7 +1,8 @@
 (ns dapr.device.events
   "Side-effecting device browser hooks. Common UI events delegate here by device
   type; device namespaces own setup, connection, chooser, and listing behavior."
-  (:require [dapr.state :as state]))
+  (:require [dapr.state :as state]
+            [taoensso.telemere :as t]))
 
 (defmulti open-browser!
   "Open the folder browser for a device type."
@@ -33,6 +34,5 @@
       (let [entries (browser-entries! (:browser @state-atom))]
         (swap! state-atom state/browser-set-entries entries))
       (catch Throwable t
-        (swap! state-atom (fn [s] (-> s
-                                      (state/browser-set-entries [])
-                                      (state/append-log (str "Browse failed: " (.getMessage t))))))))))
+        (swap! state-atom state/browser-set-entries [])
+        (t/log! {:level :error :error t :msg (str "Browse failed: " (.getMessage t))})))))

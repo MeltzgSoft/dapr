@@ -34,6 +34,8 @@
    :progress       nil    ; {:done n :total t}
    :log            []     ; vector of message strings (capped at max-log-lines)
    :log-appends    0      ; total lines ever appended; drives log auto-scroll
+   :log-open?      false  ; whether the live log window is showing
+   :log-file       nil    ; path of the current log file (see dapr.log)
    :error          nil})
 
 (def max-log-lines
@@ -297,7 +299,10 @@
 (defn append-log
   "Append a message line to the activity log, keeping only the most recent
   max-log-lines. :log-appends counts every append (never reset) so the view can
-  detect new lines and auto-scroll even once the capped log stops growing."
+  detect new lines and auto-scroll even once the capped log stops growing.
+
+  This is now the single sink for the Telemere UI handler (see dapr.log) — business
+  code emits Telemere signals rather than calling this directly."
   [state msg]
   (-> state
       (update :log (fn [log]
@@ -307,6 +312,21 @@
                          (subvec log (- n max-log-lines))
                          log))))
       (update :log-appends inc)))
+
+(defn set-log-file
+  "Record the path of the log file currently being written (see dapr.log)."
+  [state path]
+  (assoc state :log-file path))
+
+(defn open-log
+  "Show the live log window."
+  [state]
+  (assoc state :log-open? true))
+
+(defn close-log
+  "Hide the live log window."
+  [state]
+  (assoc state :log-open? false))
 
 (defn set-error
   "Record an error message and move to the :error status."

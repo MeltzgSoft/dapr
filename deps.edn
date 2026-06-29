@@ -24,6 +24,9 @@
   ;; system of record for libraries. Snapshotted to an EDN file (see dapr.cache);
   ;; pure-JVM, so it needs no extra native-access flags.
   datascript/datascript               {:mvn/version "1.7.8"}
+  ;; Structured logging: file output + an in-memory ring buffer feeding the live
+  ;; log window (see dapr.log). Clojure-native, so no SLF4J/logback wiring.
+  com.taoensso/telemere               {:mvn/version "1.2.1"}
   ;; cljfx pins an early-access JavaFX 22; exclude it so we control the JavaFX
   ;; version ourselves and avoid two JavaFX versions on the classpath.
   cljfx/cljfx           {:mvn/version "1.10.8"

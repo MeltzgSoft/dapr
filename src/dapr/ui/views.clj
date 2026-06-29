@@ -340,33 +340,6 @@
                 (controls-row state)
                 {:fx/type :label :text (fmt/plan-summary-text (:summary plan))}]})
 
-(defn- activity-pane
-  "Bottom section of the workspace: the activity log, which grows to fill whatever
-  height the section is given."
-  [{:keys [log log-appends]}]
-  {:fx/type    :v-box
-   :padding    12
-   :min-height 120
-   :children   [;; :scroll-top grows with every appended line (and is large enough
-                ;; to clamp to the bottom), so the log stays pinned to the newest
-                ;; line as it streams in.
-                {:fx/type     :text-area
-                 :v-box/vgrow :always
-                 :editable    false
-                 :scroll-top  (* log-appends 1.0e7)
-                 :text        (str/join "\n" log)}]})
-
-(defn- workspace
-  "The main window body: the sync UI above a resizable activity-log panel, divided
-  by a draggable splitter — drag it down to grow the sync area, up to grow the
-  log, like an IDE's terminal panel. (The progress bar is a separate always-on
-  status strip below this, so it is never affected by the divider.)"
-  [state]
-  {:fx/type           :split-pane
-   :orientation       :vertical
-   :divider-positions [0.62]
-   :items             [(sync-pane state) (activity-pane state)]})
-
 ;; --- window assembly ---------------------------------------------------------
 
 (def ^:private theme-css
@@ -389,7 +362,39 @@
               :on-action {:event/type ::events/quit}}]}
     {:fx/type :menu :text "Settings"
      :items [{:fx/type :menu-item :text "Manage Libraries…"
-              :on-action {:event/type ::events/settings-open}}]}]})
+              :on-action {:event/type ::events/settings-open}}]}
+    {:fx/type :menu :text "View"
+     :items [{:fx/type :menu-item :text "View Logs…"
+              :on-action {:event/type ::events/view-logs}}]}]})
+
+(defn- log-window
+  "On-demand live log window (shown via :log-open?, the View ▸ View Logs… menu). A
+  read-only text-area auto-scrolls to the newest line: :scroll-top grows with every
+  appended line (and is large enough to clamp to the bottom), so the log stays
+  pinned to the tail as Telemere signals stream in (see dapr.log)."
+  [{:keys [log log-appends log-open?] :as state}]
+  {:fx/type  :stage
+   :showing  (boolean log-open?)
+   :title    "Dapr — Logs"
+   :width    760
+   :height   460
+   :on-close-request {:event/type ::events/log-close}
+   :scene
+   {:fx/type     :scene
+    :stylesheets (theme-stylesheets state)
+    :root
+    {:fx/type  :v-box
+     :spacing  8
+     :padding  8
+     :children [{:fx/type     :text-area
+                 :v-box/vgrow :always
+                 :editable    false
+                 :scroll-top  (* log-appends 1.0e7)
+                 :text        (str/join "\n" log)}
+                {:fx/type   :h-box
+                 :alignment :center-right
+                 :children  [{:fx/type :button :text "Close"
+                              :on-action {:event/type ::events/log-close}}]}]}}})
 
 (defn- browser-panel-height
   "Estimated height of the open folder browser. Device-specific chooser/connect
@@ -434,6 +439,18 @@
                 (choice :light "Light")
                 (choice :dark "Dark")]}))
 
+(defn- log-settings
+  "Settings panel showing the current log file and a button to choose the log
+  directory (the :log-dir setting; nil = system temp). Dispatches ::choose-log-dir."
+  [log-file]
+  {:fx/type :v-box :spacing 6
+   :style   "-fx-border-color: gray; -fx-border-radius: 4; -fx-padding: 8;"
+   :children [{:fx/type :label :style "-fx-font-weight: bold;" :text "Logs"}
+              {:fx/type :label :text (str "Current log: " (or log-file "—"))}
+              {:fx/type :h-box :spacing 8 :alignment :center-left
+               :children [{:fx/type :button :text "Change log folder…"
+                           :on-action {:event/type ::events/choose-log-dir}}]}]})
+
 (defn- settings-height
   "Preferred settings-window height for the current content, so the window grows
   and shrinks with what it shows. Built additively from the body's actual parts —
@@ -447,7 +464,7 @@
                  (+ 147                                       ; name/labels/add/save rows
                     (* 28 (max 1 (count (:roots editor))))    ; one row per root
                     (if browser (browser-panel-height browser) 0))
-                 (+ 320 (* 32 (count libraries))))]           ; library list + settings panels
+                 (+ 410 (* 32 (count libraries))))]           ; library list + settings panels
     (min (- (.getHeight (.getVisualBounds (Screen/getPrimary))) 60)
          (+ chrome body))))
 
@@ -456,7 +473,7 @@
   graph at all times; its visibility tracks :settings-open? in the state. Its
   height tracks the content (see settings-height); the body sits in a scroll-pane
   so it scrolls only once the window hits its screen-bounded maximum."
-  [{:keys [settings-open? libraries editor browser settings] :as state}]
+  [{:keys [settings-open? libraries editor browser settings log-file] :as state}]
   {:fx/type  :stage
    :showing  (boolean settings-open?)
    :modality :application-modal
@@ -481,14 +498,16 @@
                              :children [(library-list libraries)
                                         (sink-only-options
                                          (get settings :sink-only-handling :keep))
-                                        (theme-options (get settings :theme :system))]})}
+                                        (theme-options (get settings :theme :system))
+                                        (log-settings log-file)]})}
                 {:fx/type :h-box :alignment :center-right
                  :children [{:fx/type :button :text "Close"
                              :on-action {:event/type ::events/settings-close}}]}]}}})
 
 (defn- main-stage
-  "The primary window: menu bar plus the sync workspace (a resizable split of the
-  sync UI over the progress + activity log)."
+  "The primary window: menu bar over the sync workspace, with the scan/sync progress
+  strip pinned along the bottom. The activity log now lives in its own on-demand
+  window (View ▸ View Logs…, see log-window) rather than an always-on panel."
   [state]
   {:fx/type :stage
    :showing true
@@ -502,12 +521,12 @@
     :root
     {:fx/type :border-pane
      :top     (menu-bar)
-     :center  (workspace state)
+     :center  (sync-pane state)
      :bottom  (status-bar (:progress state) (:status state))}}})
 
 (defn root-view
-  "Render the whole application: the main window plus the (modal) settings
-  window, whose visibility is driven by the state."
+  "Render the whole application: the main window plus the (modal) settings window
+  and the (on-demand) live log window, whose visibility is driven by the state."
   [state]
   {:fx/type fx/ext-many
-   :desc    [(main-stage state) (settings-stage state)]})
+   :desc    [(main-stage state) (settings-stage state) (log-window state)]})
