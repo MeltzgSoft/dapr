@@ -7,6 +7,7 @@
             [clojure.java.io :as io]
             [dapr.cache :as cache]
             [dapr.library.store :as store]
+            [dapr.log :as log]
             [dapr.state :as state]
             [dapr.ui.events :as events]
             [dapr.ui.views :as views]
@@ -50,6 +51,14 @@
 
 (defmethod ig/halt-key! :dapr/state [_ state-atom]
   (reset! state-atom state/initial-state))
+
+(defmethod ig/init-key :dapr/log [_ {:keys [cache state-atom]}]
+  (let [settings (cache/app-settings (d/db (:conn cache)))
+        path     (log/configure! state-atom (log/log-dir settings))]
+    {:path path}))
+
+(defmethod ig/halt-key! :dapr/log [_ _]
+  (log/shutdown!))
 
 (defn- color-scheme->kw
   "Map a javafx.application.ColorScheme to :dark/:light (nil when unrecognized)."

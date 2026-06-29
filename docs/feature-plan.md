@@ -56,8 +56,8 @@ lint + cljfmt clean.**
 - `docs/feature-plan.md` is otherwise kept untracked to follow across branches, but
   it is committed on `feat/sink-only-tracks`.
 
-### Next up: `feat/theming` (6) is now also ✅ DONE (stacked on this branch).
-Remaining order: `feat/logging` (2) → `feat/shift-select` (8) →
+### Next up: `feat/theming` (6) and `feat/logging` (2) are now also ✅ DONE
+(each stacked on the previous branch). Remaining order: `feat/shift-select` (8) →
 `ci/release-uberjar` (9). Spikes (3, 4) anytime. (See per-feature blocks below.)
 
 ---
@@ -139,22 +139,35 @@ format complete; unit + integration green, lint + cljfmt clean.
 ---
 
 ## 2. `feat/logging` — Telemere logging, file output, live view
-- [ ] **deps.edn:** add `com.taoensso/telemere`.
-- [ ] New `src/dapr/log.clj`: configure on startup —
-  - file handler: default dir = `System/getProperty "java.io.tmpdir"`; or a
-    user-chosen dir from settings.
-  - **increment-on-startup:** pick `dapr.N.log` where N is the next free integer
-    in the target dir (don't overwrite existing logs).
-  - in-memory **ring-buffer** handler feeding the live log window.
-- [ ] **Remove** the old activity log: `state/:log`, `:log-appends`,
-      `append-log`, `activity-pane`, and `scan-logger`'s state writes. Replace
-      those call sites in `events.clj` with Telemere signals.
-- [ ] `ui/views.clj`: Settings shows **current log dir** + a dir picker; a menu
-      item "View Logs…" opens a live log window (reuse the `:text-area`
-      auto-scroll trick from the old `activity-pane`, backed by the ring buffer).
-- [ ] Configure logging in `main.clj`/`system.clj` **before** components start.
+- [x] **deps.edn:** added `com.taoensso/telemere {:mvn/version "1.2.1"}`.
+- [x] New `src/dapr/log.clj`:
+  - file handler (`t/handler:file`) under the `:log-dir` setting, default
+    `System/getProperty "java.io.tmpdir"`.
+  - **increment-on-startup:** `next-log-file` picks `dapr.N.log` (smallest free N
+    from 0), creating the dir; never overwrites an existing log.
+  - **UI handler** mirrors each signal into the app state's activity log
+    (`state/append-log`) so the live log window renders reactively — the ring
+    buffer is the existing capped `:log` vector. Min level pinned to `:info`.
+- [x] **Removed** the always-on activity log: `activity-pane` + the `workspace`
+      split are gone; the **only** `append-log` caller is now the Telemere UI
+      handler. All business call sites (events / device events / smb events,
+      `scan-logger`) emit `t/log!` signals instead (per-dir `:info`, per-file
+      `:debug` so the file isn't flooded — the progress bar covers file
+      granularity). Errors log with the throwable attached, so the stack trace
+      lands in the file (replaces the old `error-detail` string append).
+- [x] `ui/views.clj`: a **View ▸ View Logs…** menu opens an on-demand live log
+      window (`log-window`, driven by `:log-open?`, themed); Settings shows the
+      **current log file** + a "Change log folder…" picker (`DirectoryChooser` →
+      `::choose-log-dir` persists `:log-dir` and repoints the file via
+      `log/set-dir!`).
+- [x] Logging configured by a new `:dapr/log` Integrant component (depends on
+      cache+state; the renderer depends on it, so it inits **before** scans run).
+- [x] Tests: `log_test` (`log-dir`/`next-log-file`/`signal->line`), `state_test`
+      (`open-log`/`close-log`/`set-log-file`). Unit green; lint + cljfmt clean.
+      Verified the Telemere→state→file path end-to-end via a REPL smoke.
 
-**Setting:** `:log-dir` (nil = tmp). **Status:** not started
+**Setting:** `:log-dir` (nil = tmp). **Status:** ✅ **DONE** on `feat/logging`
+(stacked on `feat/theming`).
 
 ---
 

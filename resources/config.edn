@@ -1,4 +1,8 @@
 {:dapr/cache    {}
  :dapr/state    {:cache #ig/ref :dapr/cache}
+ ;; Configure logging once the state atom exists but before the renderer starts
+ ;; scanning, so file + live-log output captures everything from launch.
+ :dapr/log      {:cache #ig/ref :dapr/cache :state-atom #ig/ref :dapr/state}
  :dapr/renderer {:state-atom #ig/ref :dapr/state
-                 :cache      #ig/ref :dapr/cache}}
+                 :cache      #ig/ref :dapr/cache
+                 :log        #ig/ref :dapr/log}}

@@ -253,6 +253,13 @@
       (testing ":log-appends counts every append, not just retained lines"
         (is (= n (:log-appends s)))))))
 
+(deftest log-window-test
+  (testing "open-log/close-log toggle the live log window flag"
+    (is (true? (:log-open? (state/open-log state/initial-state))))
+    (is (false? (:log-open? (-> state/initial-state state/open-log state/close-log)))))
+  (testing "set-log-file records the active log path"
+    (is (= "/tmp/dapr.0.log" (:log-file (state/set-log-file state/initial-state "/tmp/dapr.0.log"))))))
+
 (deftest set-error-test
   (testing "records the message and moves to :error"
     (let [s (state/set-error state/initial-state "boom")]

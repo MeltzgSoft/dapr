@@ -4,7 +4,8 @@
   persistence in dapr.cache. Each handler runs on the JavaFX Application Thread,
   so long-running scans/copies are dispatched to background threads to keep the
   UI responsive."
-  (:require [dapr.cache :as cache]
+  (:require [clojure.java.io :as io]
+            [dapr.cache :as cache]
             [dapr.device.events :as device-events]
             [dapr.device.file.events]
             [dapr.device.format :as device]
@@ -13,11 +14,14 @@
             [dapr.device.smb.events]
             [dapr.domain.library :as lib]
             [dapr.domain.plan :as plan]
+            [dapr.log :as log]
             [dapr.state :as state]
             [dapr.sync :as sync]
             [dapr.ui.format :as fmt]
-            [datascript.core :as d])
-  (:import (javafx.application Platform)))
+            [datascript.core :as d]
+            [taoensso.telemere :as t])
+  (:import (javafx.application Platform)
+           (javafx.stage DirectoryChooser)))
 
 (defn- refresh-libraries!
   "Re-read the library projection in state from the cache DB (the system of
@@ -37,28 +41,27 @@
   [^Throwable t]
   (or (not-empty (.getMessage t)) (.getName (class t))))
 
-(defn- error-detail
-  "`t`'s full stack trace as a string, so a failure is captured in the activity log
-  (and not lost as a bare 'StackOverflowError' with a nil message)."
-  [^Throwable t]
-  (let [sw (java.io.StringWriter.)]
-    (.printStackTrace t (java.io.PrintWriter. sw))
-    (str sw)))
+(defn- log-error!
+  "Emit an error signal carrying `t` (so its stack trace lands in the log file) with
+  a one-line `prefix` message, and set the UI error field to its summary."
+  [state-atom prefix ^Throwable t]
+  (let [summary (error-summary t)]
+    (t/log! {:level :error :error t :msg (str prefix summary)})
+    (swap! state-atom state/set-error summary)))
 
 (defn- scan-logger
-  "Scan-event callback that appends progress to the activity log, tagged with the
-  library being scanned. Logs each directory as it is entered (the last such line
-  before a freeze pinpoints the directory whose listing hung) and each audio file
-  with a running count of tracks scanned so far in that library."
-  [state-atom label]
+  "Scan-event callback that logs progress, tagged with the library being scanned.
+  Each directory entered is logged at :info (the last such line before a freeze
+  pinpoints the directory whose listing hung); per-file lines are :debug (filtered
+  from the file/UI by default, see dapr.log) since the progress bar already tracks
+  file-level progress."
+  [label]
   (let [scanned (atom 0)]
     (fn [{:keys [type rel track]}]
       (case type
-        :dir  (swap! state-atom state/append-log
-                     (format "  [%s] scanning %s/" label (if (= "" rel) "" rel)))
+        :dir  (t/log! (format "  [%s] scanning %s/" label (if (= "" rel) "" rel)))
         :file (let [n (swap! scanned inc)]
-                (swap! state-atom state/append-log
-                       (format "  [%s] #%d %s" label n (or (:rel track) (:name track)))))
+                (t/log! :debug (format "  [%s] #%d %s" label n (or (:rel track) (:name track)))))
         nil))))
 
 (defn- begin-scan!
@@ -107,7 +110,7 @@
   progress (see scan-logger), but first aborts the walk, by throwing, once
   `superseded?` reports a newer scan has started."
   [state-atom label superseded? prog]
-  (let [log (scan-logger state-atom label)]
+  (let [log (scan-logger label)]
     (fn [ev]
       (when (superseded?)
         (throw (ex-info "scan superseded" {:dapr/abort true})))
@@ -131,10 +134,9 @@
   space come back empty/0, see set-catalogs-from-cache!)."
   [state-atom conn src snk]
   (set-catalogs-from-cache! state-atom conn src snk)
-  (swap! state-atom state/append-log
-         (if snk
-           (format "Loaded '%s' → '%s' from cache; refreshing…" (:name src) (:name snk))
-           (format "Loaded '%s' (no sink) from cache; refreshing…" (:name src)))))
+  (t/log! (if snk
+            (format "Loaded '%s' → '%s' from cache; refreshing…" (:name src) (:name snk))
+            (format "Loaded '%s' (no sink) from cache; refreshing…" (:name src)))))
 
 (defn- reload-catalogs!
   "Refresh the source/sink catalogs. First loads them instantly from the cache so
@@ -180,16 +182,12 @@
                      (fn [s] (-> s
                                  (state/set-catalogs src-cat snk-cat free)
                                  (state/set-progress nil)
-                                 (state/set-status :idle)
-                                 (state/append-log (format "Source %d · Sink %d tracks · %s free."
-                                                           (count src-cat) (count snk-cat)
-                                                           (fmt/human-bytes free))))))))
+                                 (state/set-status :idle))))
+              (t/log! (format "Source %d · Sink %d tracks · %s free."
+                              (count src-cat) (count snk-cat) (fmt/human-bytes free)))))
           (catch Throwable t
             (when-not (superseded-ex? t)
-              (swap! state-atom (fn [s] (-> s
-                                            (state/set-error (error-summary t))
-                                            (state/append-log (str "Scan failed: " (error-summary t)))
-                                            (state/append-log (error-detail t))))))))))))
+              (log-error! state-atom "Scan failed: " t))))))))
 
 (defn- run-preview!
   "Compute the selection plan and move to :planned. Reuses the catalogs already
@@ -203,9 +201,8 @@
         snk       (state/library-by-id s (:sink-id s))
         handling  (state/setting s :sink-only-handling :keep)
         src-roots (when (= handling :add-to-source) (sync/library-roots! src))]
-    (swap! state-atom (fn [s] (-> s
-                                  (state/set-status :scanning)
-                                  (state/append-log "Computing plan…"))))
+    (swap! state-atom state/set-status :scanning)
+    (t/log! "Computing plan…")
     (try
       (let [actions (if (and (seq source-catalog) (seq sink-catalog))
                       (plan/selection-plan {:source-catalog     source-catalog
@@ -220,20 +217,16 @@
             summ    (plan/summary actions)]
         (swap! state-atom (fn [s] (-> s
                                       (state/set-plan actions summ)
-                                      (state/set-progress nil)
-                                      (state/append-log (fmt/plan-summary-text summ))))))
+                                      (state/set-progress nil))))
+        (t/log! (fmt/plan-summary-text summ)))
       (catch Throwable t
-        (swap! state-atom (fn [s] (-> s
-                                      (state/set-error (error-summary t))
-                                      (state/append-log (str "Plan failed: " (error-summary t)))
-                                      (state/append-log (error-detail t)))))))))
+        (log-error! state-atom "Plan failed: " t)))))
 
 (defn- run-sync! [state-atom {:keys [conn path]}]
   (let [{:keys [source-catalog sink-catalog source-id sink-id] :as s0} @state-atom
         actions (get-in s0 [:plan :actions])]
-    (swap! state-atom (fn [s] (-> s
-                                  (state/set-status :syncing)
-                                  (state/append-log "Syncing…"))))
+    (swap! state-atom state/set-status :syncing)
+    (t/log! "Syncing…")
     (try
       (let [result (sync/execute-plan!
                     actions
@@ -251,16 +244,11 @@
           (when (and src snk) (set-catalogs-from-cache! state-atom conn src snk)))
         (swap! state-atom (fn [s] (-> s
                                       (state/set-status :done)
-                                      (state/set-progress nil)
-                                      (state/append-log
-                                       (format "Done. Added %d, deleted %d, to source %d."
-                                               (:add result) (:delete result)
-                                               (:add-to-source result)))))))
+                                      (state/set-progress nil))))
+        (t/log! (format "Done. Added %d, deleted %d, to source %d."
+                        (:add result) (:delete result) (:add-to-source result))))
       (catch Throwable t
-        (swap! state-atom (fn [s] (-> s
-                                      (state/set-error (error-summary t))
-                                      (state/append-log (str "Sync failed: " (error-summary t)))
-                                      (state/append-log (error-detail t)))))))))
+        (log-error! state-atom "Sync failed: " t)))))
 
 (defn- probe-availability!
   "Probe each library's device reachability off the JFX thread and record an
@@ -296,6 +284,23 @@
 
 (defn- library-id-by-name [state-atom nm]
   (:id (first (filter #(= nm (:name %)) (:libraries @state-atom)))))
+
+(defn- choose-log-dir!
+  "Open a directory chooser (on the JFX thread); on a pick, persist the :log-dir
+  setting and repoint the file log there (a fresh dapr.N.log). No-op on cancel."
+  [state-atom {:keys [conn path]}]
+  (let [init    (let [d (io/file (log/log-dir (:settings @state-atom)))]
+                  (when (.isDirectory d) d))
+        chooser (doto (DirectoryChooser.)
+                  (.setTitle "Choose log directory")
+                  (.setInitialDirectory init))
+        dir     (.showDialog chooser nil)]
+    (when dir
+      (let [dir-path (.getAbsolutePath dir)]
+        (swap! state-atom state/set-setting :log-dir dir-path)
+        (cache/set-app-setting! conn :log-dir dir-path)
+        (cache/snapshot! conn path)
+        (log/set-dir! state-atom dir-path)))))
 
 (defn make-handler
   "Return a cljfx event handler closing over `state-atom` and the `cache`
@@ -362,7 +367,7 @@
                            (swap! state-atom (fn [s] (-> s
                                                          (state/editor-add-root uri)
                                                          (state/browser-close))))
-                           (swap! state-atom state/append-log mixed-device-msg)))
+                           (t/log! mixed-device-msg)))
       ::browser-cancel (swap! state-atom state/browser-close)
 
       ::editor-save
@@ -373,8 +378,7 @@
               (refresh-libraries! state-atom conn)
               (swap! state-atom state/cancel-editor)
               (future (probe-availability! state-atom)))
-          (swap! state-atom state/append-log
-                 "Library needs a name and at least one file://, mtp:// or smb:// root.")))
+          (t/log! "Library needs a name and at least one file://, mtp:// or smb:// root.")))
       ::editor-cancel (swap! state-atom state/cancel-editor)
 
       ;; sync workflow
@@ -395,5 +399,11 @@
       ::refresh-availability (future (refresh-availability! state-atom cache))
       ::preview       (future (run-preview! state-atom))
       ::sync          (future (run-sync! state-atom cache))
+
+      ;; logging — the live log window + its log-dir picker
+      ::view-logs      (swap! state-atom state/open-log)
+      ::log-close      (swap! state-atom state/close-log)
+      ::choose-log-dir (choose-log-dir! state-atom cache)
+
       ::quit          (do (Platform/exit) (System/exit 0))
       nil)))
