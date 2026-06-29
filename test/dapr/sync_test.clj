@@ -65,3 +65,26 @@
             (is (= "Art" (:artist (get cat ["New.mp3" 10])))))))
       (testing "the added track is now recorded on both libraries"
         (is (= #{src snk} (set (cache/track-libraries (d/db conn) "New.mp3" 10))))))))
+
+(deftest apply-source-adds-to-cache-test
+  (let [conn (cache/empty-conn)
+        src  (cache/upsert-library! conn {:name "S" :roots ["file:///s/"]})
+        snk  (cache/upsert-library! conn {:name "K" :roots ["file:///k/"]})
+        ;; A sink-only track copied back into the source under :add-to-source.
+        sink-cat {["Back.mp3" 50] {:key ["Back.mp3" 50] :rel "Back.mp3" :size 50
+                                   :artist "Art" :album "Alb" :title "Back"
+                                   :root "file:///k/"}}]
+    (cache/replace-library-tracks! conn snk [{:rel "Back.mp3" :size 50 :root "file:///k/"
+                                              :artist "Art" :album "Alb" :title "Back"}])
+    (let [actions [{:op :add-to-source :key ["Back.mp3" 50] :size 50
+                    :src {:root "file:///k/" :rel "Back.mp3"}
+                    :target {:root "file:///s/" :rel "Back.mp3"}}
+                   {:op :skip :key ["Other.mp3" 10]}]]
+      (sync/apply-source-adds-to-cache! conn src sink-cat actions)
+      (testing "the source cache gains a presence under its root carrying sink tags"
+        (let [cat (cache/library-catalog (d/db conn) src)]
+          (is (= #{["Back.mp3" 50]} (set (keys cat))))
+          (is (= "file:///s/" (:root (get cat ["Back.mp3" 50]))))
+          (is (= "Art" (:artist (get cat ["Back.mp3" 50]))))))
+      (testing "the copied-back track is now recorded on both libraries"
+        (is (= #{src snk} (set (cache/track-libraries (d/db conn) "Back.mp3" 50))))))))
