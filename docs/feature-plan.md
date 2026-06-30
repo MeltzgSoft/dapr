@@ -155,6 +155,12 @@ format complete; unit + integration green, lint + cljfmt clean.
       `:debug` so the file isn't flooded — the progress bar covers file
       granularity). Errors log with the throwable attached, so the stack trace
       lands in the file (replaces the old `error-detail` string append).
+- [x] Live log window **follows the tail** but disengages when the user scrolls up
+      (frozen at their position) and offers a "⤓ Jump to bottom" button to re-engage.
+      Detection uses a real `scrollTop` `ChangeListener` attached via
+      `fx/ext-on-instance-lifecycle` (cljfx has no scrollTop-changed prop), fed back
+      through `events/dispatch!`; `state/log-scrolled` only unfollows on a downward
+      move so the programmatic pin never trips it.
 - [x] `ui/views.clj`: a **View ▸ View Logs…** menu opens an on-demand live log
       window (`log-window`, driven by `:log-open?`, themed); Settings shows the
       **current log file** + a "Change log folder…" picker (`DirectoryChooser` →
