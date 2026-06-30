@@ -15,7 +15,10 @@
             [dapr.domain.library :as lib]
             [dapr.ui.events :as events]
             [dapr.ui.format :as fmt])
-  (:import (javafx.stage Screen)))
+  (:import (javafx.beans.value ChangeListener)
+           (javafx.scene Parent)
+           (javafx.scene.control TextArea)
+           (javafx.stage Screen)))
 
 ;; --- library manager ---------------------------------------------------------
 
@@ -367,12 +370,27 @@
      :items [{:fx/type :menu-item :text "View Logs…"
               :on-action {:event/type ::events/view-logs}}]}]})
 
+(defn- attach-log-scroll-listener!
+  "Wire the live log text-area's scrollTop to ::log-scrolled. cljfx exposes no
+  scrollTop change-listener prop (only :on-scroll, which misses scrollbar drags), so
+  on the window root's creation we look the text-area up and attach a real listener,
+  feeding changes back through the normal event flow. It fires for the programmatic
+  pin too — log-scrolled only disengages on a downward (scroll-up) move, so the pin
+  never trips it."
+  [^Parent root]
+  (when-let [ta (.lookup root ".text-area")]
+    (.addListener (.scrollTopProperty ^TextArea ta)
+                  (reify ChangeListener
+                    (changed [_ _ _ nv]
+                      (events/dispatch! {:event/type ::events/log-scrolled :fx/event nv}))))))
+
 (defn- log-window
-  "On-demand live log window (shown via :log-open?, the View ▸ View Logs… menu). A
-  read-only text-area auto-scrolls to the newest line: :scroll-top grows with every
-  appended line (and is large enough to clamp to the bottom), so the log stays
-  pinned to the tail as Telemere signals stream in (see dapr.log)."
-  [{:keys [log log-appends log-open?] :as state}]
+  "On-demand live log window (shown via :log-open?, the View ▸ View Logs… menu). The
+  read-only text-area follows the tail — :scroll-top is pinned far past the bottom so
+  it clamps there and grows with each line — until the user scrolls up, which freezes
+  the view at their position (see state/log-scrolled); the ⤓ button re-engages
+  following and snaps back to the newest line."
+  [{:keys [log log-appends log-open? log-follow? log-scroll] :as state}]
   {:fx/type  :stage
    :showing  (boolean log-open?)
    :title    "Dapr — Logs"
@@ -383,18 +401,32 @@
    {:fx/type     :scene
     :stylesheets (theme-stylesheets state)
     :root
-    {:fx/type  :v-box
-     :spacing  8
-     :padding  8
-     :children [{:fx/type     :text-area
-                 :v-box/vgrow :always
-                 :editable    false
-                 :scroll-top  (* log-appends 1.0e7)
-                 :text        (str/join "\n" log)}
-                {:fx/type   :h-box
-                 :alignment :center-right
-                 :children  [{:fx/type :button :text "Close"
-                              :on-action {:event/type ::events/log-close}}]}]}}})
+    {:fx/type    fx/ext-on-instance-lifecycle
+     :on-created attach-log-scroll-listener!
+     :desc
+     {:fx/type  :v-box
+      :spacing  8
+      :padding  8
+      :children [{:fx/type     :text-area
+                  :v-box/vgrow :always
+                  :editable    false
+                  ;; While following, pin to the bottom: a value far past the max
+                  ;; clamps there and grows with each line. While not following, hold
+                  ;; the user's captured position so new lines don't yank the view
+                  ;; (and so the prop is never removed, which would reset it to top).
+                  :scroll-top  (if log-follow? (* log-appends 1.0e7) log-scroll)
+                  :text        (str/join "\n" log)}
+                 {:fx/type   :h-box
+                  :spacing   8
+                  :alignment :center-right
+                  :children  [{:fx/type   :button
+                               :text      "⤓ Jump to bottom"
+                               :disable   (boolean log-follow?)
+                               :tooltip   {:fx/type :tooltip
+                                           :text "Resume auto-scrolling to the newest line"}
+                               :on-action {:event/type ::events/log-follow}}
+                              {:fx/type :button :text "Close"
+                               :on-action {:event/type ::events/log-close}}]}]}}}})
 
 (defn- browser-panel-height
   "Estimated height of the open folder browser. Device-specific chooser/connect

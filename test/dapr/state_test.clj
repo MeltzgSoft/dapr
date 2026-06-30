@@ -257,8 +257,31 @@
   (testing "open-log/close-log toggle the live log window flag"
     (is (true? (:log-open? (state/open-log state/initial-state))))
     (is (false? (:log-open? (-> state/initial-state state/open-log state/close-log)))))
+  (testing "open-log re-engages tail-following"
+    (is (true? (:log-follow? (-> state/initial-state
+                                 (assoc :log-follow? false)
+                                 state/open-log)))))
   (testing "set-log-file records the active log path"
     (is (= "/tmp/dapr.0.log" (:log-file (state/set-log-file state/initial-state "/tmp/dapr.0.log"))))))
+
+(deftest log-follow-test
+  (let [following (assoc state/initial-state :log-follow? true :log-scroll 500.0)]
+    (testing "scrolling up while following disengages follow and freezes at the position"
+      (let [s (state/log-scrolled following 120.0)]
+        (is (false? (:log-follow? s)))
+        (is (= 120.0 (:log-scroll s)))))
+    (testing "the programmatic pin (scrollTop increasing) keeps following"
+      (let [s (state/log-scrolled following 800.0)]
+        (is (true? (:log-follow? s)))
+        (is (= 800.0 (:log-scroll s)))))
+    (testing "a sub-epsilon jitter down does not disengage follow"
+      (is (true? (:log-follow? (state/log-scrolled following 499.0)))))
+    (testing "while not following, scrolling only records the position"
+      (let [s (state/log-scrolled (assoc following :log-follow? false) 50.0)]
+        (is (false? (:log-follow? s)))
+        (is (= 50.0 (:log-scroll s)))))
+    (testing "follow-log re-engages tail-following"
+      (is (true? (:log-follow? (state/follow-log (assoc following :log-follow? false))))))))
 
 (deftest set-error-test
   (testing "records the message and moves to :error"
