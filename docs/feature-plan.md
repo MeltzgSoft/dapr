@@ -56,9 +56,17 @@ lint + cljfmt clean.**
 - `docs/feature-plan.md` is otherwise kept untracked to follow across branches, but
   it is committed on `feat/sink-only-tracks`.
 
-### Next up: `feat/theming` (6) and `feat/logging` (2) are now also ✅ DONE
-(each stacked on the previous branch). Remaining order: `feat/shift-select` (8) →
-`ci/release-uberjar` (9). Spikes (3, 4) anytime. (See per-feature blocks below.)
+### Next up: `feat/theming` (6) ✅ DONE. `feat/logging` (2) **base DONE** but has
+**two open follow-ups** — reverted the live-log tail-follow/jump-to-bottom UX (wrong
+path) and, with it, a real `append-log` memory-leak fix. Both are documented in the
+feature-2 block below (follow-up A = re-apply the leak fix; follow-up B = rethink the
+scroll UX). Then remaining order: `feat/shift-select` (8) → `ci/release-uberjar` (9).
+Spikes (3, 4) anytime. (See per-feature blocks below.)
+
+**Branch/commit state for continuing elsewhere:** on `feat/logging` at `f806bdb`
+(the 4 commits after it — `26a32e7`, `52c8191`, `a59ba6a`, `102f77d` — were
+reverted; `origin/feat/logging` still has them + the reverts). Pull the branch,
+`clojure -M:test` should be green (75 tests). Start with follow-up A.
 
 ---
 
@@ -166,8 +174,61 @@ format complete; unit + integration green, lint + cljfmt clean.
       (`open-log`/`close-log`/`set-log-file`). Unit green; lint + cljfmt clean.
       Verified the Telemere→state→file path end-to-end via a REPL smoke.
 
-**Setting:** `:log-dir` (nil = tmp). **Status:** ✅ **DONE** on `feat/logging`
-(stacked on `feat/theming`).
+**Setting:** `:log-dir` (nil = tmp). **Status:** ✅ **base DONE** on `feat/logging`
+(commit `f806bdb`, stacked on `feat/theming`). The live log window currently
+**always pins to the tail** (`:scroll-top (* log-appends 1.0e7)`). Two follow-ups
+below are **OPEN** — a UX enhancement that was attempted and **reverted** (wrong
+path, see below), and an independent memory-leak fix that got reverted with it.
+
+### OPEN follow-up A — re-apply the `append-log` leak fix (do this first; it's real)
+`state/append-log` trims the capped `:log` with `subvec`. A `subvec` **retains its
+backing vector**, and `conj`-ing onto a subvec keeps growing that backing — so
+every line ever appended stays on the heap (confirmed: 50k appends → 500 shown, 50k
+retained). The rising GC pressure degrades the **whole** UI the longer logging runs.
+- **Fix:** materialize the trimmed window: `(into [] (subvec log (- n max-log-lines)))`.
+  Note `vec` does **not** work here — a `SubVector` is `vector?` but not editable, so
+  `vec` returns it unchanged; `into []` actually copies into a fresh `PersistentVector`.
+- Add a regression assertion: the trimmed `:log` is **not** a
+  `clojure.lang.APersistentVector$SubVector`.
+- This is independent of follow-up B — land it on its own.
+
+### OPEN follow-up B — "follow tail unless scrolled up" + jump-to-bottom (REVERTED — rethink)
+Goal: the log window auto-scrolls to the newest line, but if the user scrolls up to
+read scrollback it **freezes** there (streaming lines don't yank it), with a "⤓ Jump
+to bottom" button to re-engage. Several attempts (commits `26a32e7`/`52c8191`/
+`a59ba6a`) were **reverted** — the approach fought JavaFX/cljfx too hard. **Don't
+just retry the same thing.** Hard-won constraints to respect next time:
+- **cljfx has no `scrollTop`-changed prop for `:text-area`** (only `:on-scroll`, a
+  wheel-only `ScrollEvent` that the skin can consume and that misses scrollbar
+  drags). Verified against the cljfx 1.10.8 `text-area` prop map.
+- **`TextArea.setText` resets `scrollTop` to ~0.** cljfx replaces the whole text on
+  every append, so any `scrollTop` listener fires with ~0 each line → naive "scrollTop
+  dropped ⇒ user scrolled up" logic freezes on **every** line. Must ignore near-zero.
+- **Scrollbar-based "at bottom?" has a timing skew:** `scrollTop` updates and fires
+  its listener *before* the vertical scrollbar's value catches up, so reading the
+  scrollbar in that listener sees the stale (still-max) value and never freezes. If
+  detecting at all, use `scrollTop` **alone** (delta vs. a tracked bottom baseline).
+- **The pin fights the user mid-stream:** the `:scroll-top` pin re-pins to bottom on
+  every append render, so a freeze must take effect *synchronously* or the next line
+  yanks the view back down.
+- **Frozen view needs a snapshot:** render a *frozen copy* of the log (not the live
+  growing `:log`) so appends don't move/regrow it, and keep providing `:scroll-top`
+  (removing the prop resets to top).
+- **Escape hatch:** a raw `scrollTop` `ChangeListener` attached via
+  `fx/ext-on-instance-lifecycle` `:on-created` (look up `".text-area"`) works, but the
+  pure view fn has no handle to the live `state-atom`, so it needs a module-level
+  bridge atom (one is enough; attaching from `system.clj` avoids the global but the
+  log `Stage` isn't in `Window/getWindows` until first shown).
+- **Suggested rethink:** rather than fighting a wholesale-replaced `TextArea`, consider
+  (a) a **"Pause" toggle** instead of scroll-detection (dead simple, no listeners), or
+  (b) a **virtualized `ListView`** of log lines (better for large logs; scroll/selection
+  state is far more controllable than a `TextArea`), or (c) incremental `appendText`
+  with an explicit "was at bottom?" check before appending. Decide the approach before
+  coding.
+
+Also worth noting (perf, not size-dependent): every log line swaps the shared state
+atom → full `root-view` re-render. Fine for now; if it bites, gate the log-string
+build behind `:log-open?` or coalesce append bursts.
 
 ---
 
