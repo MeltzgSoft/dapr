@@ -302,10 +302,29 @@
         (cache/snapshot! conn path)
         (log/set-dir! state-atom dir-path)))))
 
+(defonce ^:private state-atom*
+  ;; Holds the live state-atom so the log window's raw JavaFX listeners (which cljfx
+  ;; can't express declaratively — a ListView items-change tail-follow scroll and a
+  ;; scrollbar freeze detector) can read/update state outside the normal event flow.
+  (atom nil))
+
+(defn log-state
+  "Current app state, for the log window's raw JavaFX listeners (see dapr.ui.views).
+  nil before the handler is installed."
+  []
+  (some-> @state-atom* deref))
+
+(defn on-log-scroll!
+  "Feed the log ListView's vertical scrollbar value (0..1) into state so scrolling up
+  freezes tail-following (see state/log-scrolled). A no-op before wiring."
+  [pos]
+  (some-> @state-atom* (swap! state/log-scrolled pos)))
+
 (defn make-handler
   "Return a cljfx event handler closing over `state-atom` and the `cache`
   component {:conn :path} that owns library/scan persistence."
   [state-atom {:keys [conn] :as cache}]
+  (reset! state-atom* state-atom)
   (fn [event]
     (case (:event/type event)
       ;; settings modal
@@ -403,6 +422,7 @@
       ;; logging — the live log window + its log-dir picker
       ::view-logs      (swap! state-atom state/open-log)
       ::log-close      (swap! state-atom state/close-log)
+      ::log-follow     (swap! state-atom state/follow-log)
       ::choose-log-dir (choose-log-dir! state-atom cache)
 
       ::quit          (do (Platform/exit) (System/exit 0))

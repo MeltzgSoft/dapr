@@ -15,7 +15,13 @@
             [dapr.domain.library :as lib]
             [dapr.ui.events :as events]
             [dapr.ui.format :as fmt])
-  (:import (javafx.stage Screen)))
+  (:import (javafx.application Platform)
+           (javafx.beans.value ChangeListener)
+           (javafx.collections ListChangeListener)
+           (javafx.geometry Orientation)
+           (javafx.scene Parent)
+           (javafx.scene.control ListView ScrollBar)
+           (javafx.stage Screen)))
 
 ;; --- library manager ---------------------------------------------------------
 
@@ -367,12 +373,68 @@
      :items [{:fx/type :menu-item :text "View Logs…"
               :on-action {:event/type ::events/view-logs}}]}]})
 
+(defn- vertical-scrollbar
+  "The ListView's vertical scrollbar, or nil before the skin has laid it out (a short
+  list has none)."
+  ^ScrollBar [^ListView lv]
+  (->> (.lookupAll lv ".scroll-bar")
+       (filter #(and (instance? ScrollBar %)
+                     (= Orientation/VERTICAL (.getOrientation ^ScrollBar %))))
+       first))
+
+(def ^:private log-scroll-wired
+  "Key stashed on the ListView's properties to wire the scrollbar listener exactly
+  once, the first render at which the scrollbar exists."
+  ::log-scroll-wired)
+
+(defn- ensure-log-scrollbar-listener!
+  "Attach the freeze detector to the ListView's vertical scrollbar the first time it
+  exists (it is created lazily once the list overflows). cljfx has no scrollbar-value
+  prop, so we listen directly and feed the value back through events/on-log-scroll!."
+  [^ListView lv]
+  (let [props (.getProperties lv)]
+    (when-not (.get props log-scroll-wired)
+      (when-let [sb (vertical-scrollbar lv)]
+        (.put props log-scroll-wired true)
+        (.addListener (.valueProperty sb)
+                      (reify ChangeListener
+                        (changed [_ _ _ nv]
+                          (events/on-log-scroll! (double nv)))))))))
+
+(defn- scroll-log-to-tail!
+  "Pin the ListView to its newest line (only while following). Deferred to the next
+  pulse so the freshly appended cells are laid out before we scroll."
+  [^ListView lv]
+  (when (:log-follow? (events/log-state))
+    (let [n (.size (.getItems lv))]
+      (when (pos? n)
+        (Platform/runLater #(.scrollTo lv (dec n)))))))
+
+(defn- attach-log-window!
+  "On the log window root's creation, wire the ListView's tail-follow. cljfx reuses
+  the ListView instance and .setAll's each new :log into its own items list, so a
+  single ListChangeListener fires on every appended line: while following we re-pin to
+  the tail; a ListView keeps its scroll position otherwise, so a frozen view stays put
+  as lines stream in. Also wires the scrollbar freeze detector and does the initial
+  pin so the window opens at the newest line."
+  [^Parent root]
+  (when-let [lv (.lookup root ".list-view")]
+    (let [^ListView lv lv]
+      (ensure-log-scrollbar-listener! lv)
+      (scroll-log-to-tail! lv)
+      (.addListener (.getItems lv)
+                    (reify ListChangeListener
+                      (onChanged [_ _]
+                        (ensure-log-scrollbar-listener! lv)
+                        (scroll-log-to-tail! lv)))))))
+
 (defn- log-window
   "On-demand live log window (shown via :log-open?, the View ▸ View Logs… menu). A
-  read-only text-area auto-scrolls to the newest line: :scroll-top grows with every
-  appended line (and is large enough to clamp to the bottom), so the log stays
-  pinned to the tail as Telemere signals stream in (see dapr.log)."
-  [{:keys [log log-appends log-open?] :as state}]
+  read-only ListView follows the tail — re-pinned to the newest line as Telemere
+  signals stream in (see dapr.log) — until the user scrolls up, which freezes the view
+  at their position (see state/log-scrolled); the ⤓ button re-engages following and
+  snaps back to the newest line."
+  [{:keys [log log-follow? log-open?] :as state}]
   {:fx/type  :stage
    :showing  (boolean log-open?)
    :title    "Dapr — Logs"
@@ -383,18 +445,26 @@
    {:fx/type     :scene
     :stylesheets (theme-stylesheets state)
     :root
-    {:fx/type  :v-box
-     :spacing  8
-     :padding  8
-     :children [{:fx/type     :text-area
-                 :v-box/vgrow :always
-                 :editable    false
-                 :scroll-top  (* log-appends 1.0e7)
-                 :text        (str/join "\n" log)}
-                {:fx/type   :h-box
-                 :alignment :center-right
-                 :children  [{:fx/type :button :text "Close"
-                              :on-action {:event/type ::events/log-close}}]}]}}})
+    {:fx/type    fx/ext-on-instance-lifecycle
+     :on-created attach-log-window!
+     :desc
+     {:fx/type  :v-box
+      :spacing  8
+      :padding  8
+      :children [{:fx/type     :list-view
+                  :v-box/vgrow :always
+                  :items       log}
+                 {:fx/type   :h-box
+                  :spacing   8
+                  :alignment :center-right
+                  :children  [{:fx/type   :button
+                               :text      "⤓ Jump to bottom"
+                               :disable   (boolean log-follow?)
+                               :tooltip   {:fx/type :tooltip
+                                           :text "Resume auto-scrolling to the newest line"}
+                               :on-action {:event/type ::events/log-follow}}
+                              {:fx/type :button :text "Close"
+                               :on-action {:event/type ::events/log-close}}]}]}}}})
 
 (defn- browser-panel-height
   "Estimated height of the open folder browser. Device-specific chooser/connect
