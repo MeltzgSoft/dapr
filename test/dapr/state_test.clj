@@ -265,21 +265,30 @@
     (is (= "/tmp/dapr.0.log" (:log-file (state/set-log-file state/initial-state "/tmp/dapr.0.log"))))))
 
 (deftest log-follow-test
-  (let [following (assoc state/initial-state :log-follow? true :log-scroll 500.0)]
-    (testing "scrolling up while following disengages follow and freezes at the position"
-      (let [s (state/log-scrolled following 120.0)]
+  (let [following (assoc state/initial-state :log-follow? true :log-scroll 500.0
+                         :log ["a" "b" "c"])]
+    (testing "scrolling up (scrollTop drops below the tracked bottom) freezes:
+              disengage, hold position, snapshot the log"
+      (let [s (state/log-scroll-changed following 120.0)]
         (is (false? (:log-follow? s)))
-        (is (= 120.0 (:log-scroll s)))))
-    (testing "the programmatic pin (scrollTop increasing) keeps following"
-      (let [s (state/log-scrolled following 800.0)]
+        (is (= 120.0 (:log-scroll s)))
+        (is (= ["a" "b" "c"] (:log-frozen s)))))
+    (testing "the programmatic pin (scrollTop growing to the new bottom) keeps following"
+      (let [s (state/log-scroll-changed following 800.0)]
         (is (true? (:log-follow? s)))
         (is (= 800.0 (:log-scroll s)))))
     (testing "a sub-epsilon jitter down does not disengage follow"
-      (is (true? (:log-follow? (state/log-scrolled following 499.0)))))
-    (testing "while not following, scrolling only records the position"
-      (let [s (state/log-scrolled (assoc following :log-follow? false) 50.0)]
+      (is (true? (:log-follow? (state/log-scroll-changed following 499.0)))))
+    (testing "a near-zero scrollTop (text-replace reset) is ignored, not a scroll up"
+      (let [s (state/log-scroll-changed following 0.0)]
+        (is (true? (:log-follow? s)))
+        (is (= 500.0 (:log-scroll s)))))
+    (testing "while already frozen, scrolling only records the position (snapshot kept)"
+      (let [frozen (assoc following :log-follow? false :log-frozen ["old"])
+            s      (state/log-scroll-changed frozen 80.0)]
         (is (false? (:log-follow? s)))
-        (is (= 50.0 (:log-scroll s)))))
+        (is (= ["old"] (:log-frozen s)))
+        (is (= 80.0 (:log-scroll s)))))
     (testing "follow-log re-engages tail-following"
       (is (true? (:log-follow? (state/follow-log (assoc following :log-follow? false))))))))
 
