@@ -15,7 +15,8 @@
             [dapr.domain.library :as lib]
             [dapr.ui.events :as events]
             [dapr.ui.format :as fmt])
-  (:import (javafx.beans.value ChangeListener)
+  (:import (javafx.application Platform)
+           (javafx.beans.value ChangeListener)
            (javafx.scene Parent)
            (javafx.scene.control TextArea)
            (javafx.stage Screen)))
@@ -370,27 +371,48 @@
      :items [{:fx/type :menu-item :text "View Logs…"
               :on-action {:event/type ::events/view-logs}}]}]})
 
+(defn- scroll-log-to-bottom!
+  "After the log text changes, pin the TextArea to the newest line if follow mode is
+  on. Deferred to runLater so it runs after cljfx has installed the new text (which
+  resets scrollTop toward the top)."
+  [^TextArea ta]
+  (when (events/log-following?)
+    (Platform/runLater
+     (fn []
+       (when (events/log-following?)
+         (.setScrollTop ta Double/MAX_VALUE))))))
+
 (defn- attach-log-scroll-listener!
-  "Wire the live log text-area's scrollTop to ::log-scrolled. cljfx exposes no
-  scrollTop change-listener prop (only :on-scroll, which misses scrollbar drags), so
-  on the window root's creation we look the text-area up and attach a real listener,
-  feeding changes back through the normal event flow. It fires for the programmatic
-  pin too — log-scrolled only disengages on a downward (scroll-up) move, so the pin
-  never trips it."
+  "Attach JavaFX listeners cljfx does not expose as props.
+
+  A scrollTop listener feeds every change (including scrollbar drags and wheel/
+  keyboard scrolls — anything cljfx's :scroll-top prop can't observe) into
+  ::log-scrolled, which disengages following when the user scrolls up (see
+  state/log-scroll-changed — decided from scrollTop alone, so there is no
+  scrollbar/scrollTop timing skew). A text listener re-pins to the bottom after each
+  append while following."
   [^Parent root]
   (when-let [ta (.lookup root ".text-area")]
     (.addListener (.scrollTopProperty ^TextArea ta)
                   (reify ChangeListener
                     (changed [_ _ _ nv]
-                      (events/dispatch! {:event/type ::events/log-scrolled :fx/event nv}))))))
+                      (events/dispatch! {:event/type ::events/log-scrolled
+                                         :fx/event   nv}))))
+    (.addListener (.textProperty ^TextArea ta)
+                  (reify ChangeListener
+                    (changed [_ _ _ _]
+                      (scroll-log-to-bottom! ta))))
+    (scroll-log-to-bottom! ta)))
 
 (defn- log-window
   "On-demand live log window (shown via :log-open?, the View ▸ View Logs… menu). The
   read-only text-area follows the tail — :scroll-top is pinned far past the bottom so
-  it clamps there and grows with each line — until the user scrolls up, which freezes
-  the view at their position (see state/log-scrolled); the ⤓ button re-engages
-  following and snaps back to the newest line."
-  [{:keys [log log-appends log-open? log-follow? log-scroll] :as state}]
+  it clamps there and grows with each line. A user scroll away from the bottom
+  freezes the view: it shows the :log-frozen snapshot held at the user's position so
+  streaming lines neither move nor grow it (see state/log-scroll-changed). Scrolling
+  back to the bottom, or the ⤓ button, re-engages following and snaps to the newest
+  line."
+  [{:keys [log log-appends log-open? log-follow? log-scroll log-frozen] :as state}]
   {:fx/type  :stage
    :showing  (boolean log-open?)
    :title    "Dapr — Logs"
@@ -410,12 +432,12 @@
       :children [{:fx/type     :text-area
                   :v-box/vgrow :always
                   :editable    false
-                  ;; While following, pin to the bottom: a value far past the max
-                  ;; clamps there and grows with each line. While not following, hold
-                  ;; the user's captured position so new lines don't yank the view
-                  ;; (and so the prop is never removed, which would reset it to top).
-                  :scroll-top  (if log-follow? (* log-appends 1.0e7) log-scroll)
-                  :text        (str/join "\n" log)}
+                  ;; Following: pin past the max so it clamps to (and grows with) the
+                  ;; bottom. Frozen: hold the captured position and the snapshot text,
+                  ;; so appends can't move or regrow the view (and :scroll-top is never
+                  ;; removed, which would reset it to the top).
+                  :text        (str/join "\n" (if log-follow? log log-frozen))
+                  :scroll-top  (if log-follow? (* log-appends 1.0e7) log-scroll)}
                  {:fx/type   :h-box
                   :spacing   8
                   :alignment :center-right
