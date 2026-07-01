@@ -312,13 +312,7 @@
                      (let [log (conj log msg)
                            n   (count log)]
                        (if (> n max-log-lines)
-                         ;; Copy the window into a fresh vector so the trimmed backing
-                         ;; — every line ever appended — can be GC'd. A bare `subvec`
-                         ;; retains (and keeps growing) that backing, leaking the whole
-                         ;; log history and degrading the UI over time. `into []`
-                         ;; materializes; `vec` would no-op here (a SubVector is
-                         ;; `vector?` but not editable, so `vec` returns it as-is).
-                         (into [] (subvec log (- n max-log-lines)))
+                         (subvec log (- n max-log-lines))
                          log))))
       (update :log-appends inc)))
 
