@@ -36,8 +36,7 @@
    :log-appends    0      ; total lines ever appended; drives log auto-scroll
    :log-open?      false  ; whether the live log window is showing
    :log-follow?    true   ; live log window auto-scrolls to the newest line
-   :log-scroll     0.0    ; frozen scrollTop held while not following
-   :log-frozen     []     ; log snapshot shown while not following (stable view)
+   :log-scroll     0.0    ; last observed log text-area scrollTop (for freeze/detect)
    :log-file       nil    ; path of the current log file (see dapr.log)
    :error          nil})
 
@@ -339,32 +338,21 @@
   (assoc state :log-follow? true))
 
 (def ^:private log-scroll-epsilon
-  "Minimum scrollTop drop (px) treated as a deliberate scroll up rather than
-  rounding noise."
+  "Minimum scrollTop drop (px) treated as a deliberate scroll up, rather than
+  rounding noise from the programmatic pin-to-bottom."
   2.0)
 
-(defn log-scroll-changed
-  "Fold a live-log text-area scrollTop change (`pos`) into follow/freeze state, using
-  scrollTop alone (a single source, so there is no scrollbar/scrollTop timing skew).
-
-  While following, the view is pinned to the bottom, so :log-scroll tracks that
-  growing maximum. A drop meaningfully below it means the user scrolled up to read
-  scrollback: disengage following and freeze — hold `pos` and snapshot the current
-  log into :log-frozen so streaming lines neither move nor regrow the frozen view.
-  A near-zero `pos` is ignored: replacing the TextArea text momentarily resets
-  scrollTop to ~0 before it is re-pinned, and that is not a user scroll. Re-engage
-  following with follow-log (the ⤓ button)."
+(defn log-scrolled
+  "Record the live log text-area's new `pos` (scrollTop). A drop below the last
+  position while following means the user scrolled up to read scrollback, so
+  tail-following is disengaged (the view then freezes at `pos` until they jump back
+  to the bottom — see follow-log). Programmatic pin-to-bottom only ever increases
+  scrollTop, so it never trips this."
   [state pos]
-  (let [pos (double pos)]
-    (cond
-      (< pos 1.0)
-      state
-
-      (and (:log-follow? state) (< pos (- (:log-scroll state) log-scroll-epsilon)))
-      (assoc state :log-follow? false :log-scroll pos :log-frozen (:log state))
-
-      :else
-      (assoc state :log-scroll pos))))
+  (let [pos (double pos)
+        up? (and (:log-follow? state) (< pos (- (:log-scroll state) log-scroll-epsilon)))]
+    (cond-> (assoc state :log-scroll pos)
+      up? (assoc :log-follow? false))))
 
 (defn set-error
   "Record an error message and move to the :error status."

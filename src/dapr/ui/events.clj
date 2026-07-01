@@ -302,34 +302,22 @@
         (cache/snapshot! conn path)
         (log/set-dir! state-atom dir-path)))))
 
-(defonce ^:private state-atom*
-  ;; The live state atom, for raw JavaFX listeners that cljfx can't express as props
-  ;; (the live log window's scrollTop listener). Set by make-handler.
-  (atom nil))
-
 (defonce ^:private handler*
-  ;; Holds the live event handler so raw JavaFX listeners can feed the normal event
+  ;; Holds the live event handler so raw JavaFX listeners that cljfx can't express
+  ;; as props (e.g. the log window's scrollTop listener) can feed the normal event
   ;; flow via dispatch!.
   (atom nil))
 
 (defn dispatch!
-  "Dispatch an event map through the current cljfx event handler.
+  "Dispatch an event map through the current cljfx event handler (see make-handler).
   A no-op before the handler is installed."
   [event]
-  (when-let [h @handler*]
-    (h event)))
-
-(defn log-following?
-  "True when the open live log window should stay pinned to the newest line."
-  []
-  (let [state (some-> @state-atom* deref)]
-    (boolean (and (:log-open? state) (:log-follow? state)))))
+  (when-let [h @handler*] (h event)))
 
 (defn make-handler
   "Return a cljfx event handler closing over `state-atom` and the `cache`
   component {:conn :path} that owns library/scan persistence."
   [state-atom {:keys [conn] :as cache}]
-  (reset! state-atom* state-atom)
   (reset!
    handler*
    (fn [event]
@@ -430,7 +418,7 @@
        ::view-logs      (swap! state-atom state/open-log)
        ::log-close      (swap! state-atom state/close-log)
        ::log-follow     (swap! state-atom state/follow-log)
-       ::log-scrolled   (swap! state-atom state/log-scroll-changed (:fx/event event))
+       ::log-scrolled   (swap! state-atom state/log-scrolled (:fx/event event))
        ::choose-log-dir (choose-log-dir! state-atom cache)
 
        ::quit          (do (Platform/exit) (System/exit 0))
