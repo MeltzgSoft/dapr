@@ -250,6 +250,9 @@
       (is (= state/max-log-lines (count (:log s))))
       (is (= (str (dec n)) (last (:log s))))
       (is (= (str (- n state/max-log-lines)) (first (:log s))))
+      (testing "the trimmed log is a fresh vector, not a subvec retaining the backing
+                (which would leak every line ever appended — see append-log)"
+        (is (not (instance? clojure.lang.APersistentVector$SubVector (:log s)))))
       (testing ":log-appends counts every append, not just retained lines"
         (is (= n (:log-appends s)))))))
 
