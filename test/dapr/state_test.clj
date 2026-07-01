@@ -251,7 +251,10 @@
       (is (= (str (dec n)) (last (:log s))))
       (is (= (str (- n state/max-log-lines)) (first (:log s))))
       (testing ":log-appends counts every append, not just retained lines"
-        (is (= n (:log-appends s)))))))
+        (is (= n (:log-appends s))))
+      (testing "the trimmed log is a fresh vector, not a SubVector that retains
+                (and keeps growing) the whole append history on the heap"
+        (is (not (instance? clojure.lang.APersistentVector$SubVector (:log s))))))))
 
 (deftest log-window-test
   (testing "open-log/close-log toggle the live log window flag"
