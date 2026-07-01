@@ -35,6 +35,8 @@
    :log            []     ; vector of message strings (capped at max-log-lines)
    :log-appends    0      ; total lines ever appended; drives log auto-scroll
    :log-open?      false  ; whether the live log window is showing
+   :log-follow?    true   ; live log window auto-scrolls (follows) the newest line
+   :log-scroll     0.0    ; last seen log scrollbar value (0..1); drives freeze detect
    :log-file       nil    ; path of the current log file (see dapr.log)
    :error          nil})
 
@@ -325,14 +327,39 @@
   (assoc state :log-file path))
 
 (defn open-log
-  "Show the live log window."
+  "Show the live log window, re-engaging tail-following so it opens at the newest
+  line."
   [state]
-  (assoc state :log-open? true))
+  (assoc state :log-open? true :log-follow? true))
 
 (defn close-log
   "Hide the live log window."
   [state]
   (assoc state :log-open? false))
+
+(defn follow-log
+  "Re-engage tail-following (the live log window's 'jump to bottom' button); the next
+  render snaps the view back to the newest line."
+  [state]
+  (assoc state :log-follow? true))
+
+(def ^:private log-scroll-epsilon
+  "Minimum scrollbar-value drop (of the 0..1 range) treated as a deliberate scroll up,
+  rather than rounding noise around the programmatic pin-to-bottom."
+  0.02)
+
+(defn log-scrolled
+  "Record the live log ListView's new vertical scrollbar value `pos` (0..1). A drop
+  below the last value while following means the user scrolled up to read scrollback,
+  so tail-following is disengaged — the view then freezes there (a ListView keeps its
+  position as lines append) until they jump back to the bottom (see follow-log). The
+  programmatic pin-to-bottom only ever raises the value, so it never trips this."
+  [state pos]
+  (let [pos (double pos)
+        up? (and (:log-follow? state)
+                 (< pos (- (:log-scroll state) log-scroll-epsilon)))]
+    (cond-> (assoc state :log-scroll pos)
+      up? (assoc :log-follow? false))))
 
 (defn set-error
   "Record an error message and move to the :error status."
