@@ -56,17 +56,19 @@ lint + cljfmt clean.**
 - `docs/feature-plan.md` is otherwise kept untracked to follow across branches, but
   it is committed on `feat/sink-only-tracks`.
 
-### Next up: `feat/theming` (6) ✅ DONE. `feat/logging` (2) **base DONE** but has
-**two open follow-ups** — reverted the live-log tail-follow/jump-to-bottom UX (wrong
-path) and, with it, a real `append-log` memory-leak fix. Both are documented in the
-feature-2 block below (follow-up A = re-apply the leak fix; follow-up B = rethink the
-scroll UX). Then remaining order: `feat/shift-select` (8) → `ci/release-uberjar` (9).
-Spikes (3, 4) anytime. (See per-feature blocks below.)
+### Next up: `feat/theming` (6) ✅ DONE. `feat/logging` (2) ✅ **DONE** — base plus
+**both follow-ups landed**: A (the `append-log` leak fix, commit `0bf0690`) and B
+(the live-log tail-follow/freeze/jump-to-bottom, re-done on a **ListView** instead of
+the reverted TextArea, commit `28d45e5`). Then remaining order:
+`feat/shift-select` (8) → `ci/release-uberjar` (9). Spikes (3, 4) anytime.
+(See per-feature blocks below.)
 
-**Branch/commit state for continuing elsewhere:** on `feat/logging` at `f806bdb`
-(the 4 commits after it — `26a32e7`, `52c8191`, `a59ba6a`, `102f77d` — were
-reverted; `origin/feat/logging` still has them + the reverts). Pull the branch,
-`clojure -M:test` should be green (75 tests). Start with follow-up A.
+**Branch/commit state for continuing elsewhere:** on `feat/logging` at `28d45e5`.
+Pull the branch, `clojure -M:test` should be green (76 tests). Feature 2 is
+code-complete; the ListView scroll UX (freeze on scroll-up, ⤓ jump-to-bottom) is
+unit-tested at the state layer but its **JavaFX interaction wants a manual smoke**
+(open View ▸ View Logs…, run a scan to stream lines, scroll up mid-stream → view
+should freeze, ⤓ should snap back and re-follow). Next feature: `feat/shift-select`.
 
 ---
 
@@ -174,11 +176,10 @@ format complete; unit + integration green, lint + cljfmt clean.
       (`open-log`/`close-log`/`set-log-file`). Unit green; lint + cljfmt clean.
       Verified the Telemere→state→file path end-to-end via a REPL smoke.
 
-**Setting:** `:log-dir` (nil = tmp). **Status:** ✅ **base DONE** on `feat/logging`
-(commit `f806bdb`, stacked on `feat/theming`). The live log window currently
-**always pins to the tail** (`:scroll-top (* log-appends 1.0e7)`). Two follow-ups
-below are **OPEN** — a UX enhancement that was attempted and **reverted** (wrong
-path, see below), and an independent memory-leak fix that got reverted with it.
+**Setting:** `:log-dir` (nil = tmp). **Status:** ✅ **DONE** on `feat/logging`
+(base at `f806bdb`, stacked on `feat/theming`; both follow-ups now landed —
+A `0bf0690`, B `28d45e5`). The live log window follows the tail on a **ListView**,
+freezes when the user scrolls up, and offers a ⤓ jump-to-bottom button.
 
 ### ✅ DONE follow-up A — re-applied the `append-log` leak fix (commit `0bf0690`)
 `state/append-log` trims the capped `:log` with `subvec`. A `subvec` **retains its
@@ -192,12 +193,35 @@ retained). The rising GC pressure degrades the **whole** UI the longer logging r
   `clojure.lang.APersistentVector$SubVector`.
 - This is independent of follow-up B — land it on its own.
 
-### OPEN follow-up B — "follow tail unless scrolled up" + jump-to-bottom (REVERTED — rethink)
+### ✅ DONE follow-up B — "follow tail unless scrolled up" + jump-to-bottom (commit `28d45e5`)
 Goal: the log window auto-scrolls to the newest line, but if the user scrolls up to
 read scrollback it **freezes** there (streaming lines don't yank it), with a "⤓ Jump
-to bottom" button to re-engage. Several attempts (commits `26a32e7`/`52c8191`/
-`a59ba6a`) were **reverted** — the approach fought JavaFX/cljfx too hard. **Don't
-just retry the same thing.** Hard-won constraints to respect next time:
+to bottom" button to re-engage.
+
+**How it was finally done — a virtualized `ListView`, NOT the TextArea.** The three
+reverted attempts (`26a32e7`/`52c8191`/`a59ba6a`) all fought a wholesale-replaced
+`TextArea`; the rethink switched widgets, which dissolves most of the constraints
+below. Key facts that made ListView work (all verified against cljfx 1.10.8 source):
+- cljfx sets `:items` via `mutator/observable-list`, i.e. **`.setAll` into the
+  ListView's own stable items list** (not a new list each render). So a **single
+  `ListChangeListener` attached once fires on every appended line** — that's the
+  tail-follow hook (re-`.scrollTo(last)` while following).
+- **`ext-on-instance-lifecycle` `:on-advanced` only fires when the instance is
+  *replaced*** (`not= old new`); cljfx reuses the ListView node across appends, so
+  on-advanced is useless for per-line work — hence the items ListChangeListener.
+- **A ListView keeps its scroll position when items append** (the whole reason it
+  beats TextArea, whose `setText` reset scrollTop to 0). So a frozen view just stays
+  put — no pixel-position capture/restore needed.
+- **Freeze detect = the vertical scrollbar's `valueProperty`** (0..1), listened to
+  directly (catches wheel AND drag, no skew — we're not reading it from inside a
+  scrollTop listener). Wired lazily once the scrollbar first exists (guarded by a
+  `::log-scroll-wired` flag on the node's properties, re-checked from the items
+  listener). `state/log-scrolled` unfollows only on a downward move past a 0.02
+  epsilon, so the programmatic pin (which raises the value) never trips it.
+- **One module-level bridge** (`events/log-state` + `events/on-log-scroll!`, over a
+  `state-atom*` set in `make-handler`) lets the raw listeners read/update state.
+
+Old TextArea-specific constraints, kept for the record (moot now we use ListView):
 - **cljfx has no `scrollTop`-changed prop for `:text-area`** (only `:on-scroll`, a
   wheel-only `ScrollEvent` that the skin can consume and that misses scrollbar
   drags). Verified against the cljfx 1.10.8 `text-area` prop map.
