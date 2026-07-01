@@ -180,7 +180,7 @@ format complete; unit + integration green, lint + cljfmt clean.
 below are **OPEN** — a UX enhancement that was attempted and **reverted** (wrong
 path, see below), and an independent memory-leak fix that got reverted with it.
 
-### OPEN follow-up A — re-apply the `append-log` leak fix (do this first; it's real)
+### ✅ DONE follow-up A — re-applied the `append-log` leak fix (commit `0bf0690`)
 `state/append-log` trims the capped `:log` with `subvec`. A `subvec` **retains its
 backing vector**, and `conj`-ing onto a subvec keeps growing that backing — so
 every line ever appended stays on the heap (confirmed: 50k appends → 500 shown, 50k
