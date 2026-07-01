@@ -387,7 +387,7 @@
 
   A scrollTop listener feeds every change (including scrollbar drags and wheel/
   keyboard scrolls — anything cljfx's :scroll-top prop can't observe) into
-  events/on-log-scroll!, which disengages following when the user scrolls up (see
+  ::log-scrolled, which disengages following when the user scrolls up (see
   state/log-scroll-changed — decided from scrollTop alone, so there is no
   scrollbar/scrollTop timing skew). A text listener re-pins to the bottom after each
   append while following."
@@ -396,7 +396,8 @@
     (.addListener (.scrollTopProperty ^TextArea ta)
                   (reify ChangeListener
                     (changed [_ _ _ nv]
-                      (events/on-log-scroll! nv))))
+                      (events/dispatch! {:event/type ::events/log-scrolled
+                                         :fx/event   nv}))))
     (.addListener (.textProperty ^TextArea ta)
                   (reify ChangeListener
                     (changed [_ _ _ _]
