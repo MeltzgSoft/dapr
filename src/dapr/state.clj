@@ -309,7 +309,13 @@
                      (let [log (conj log msg)
                            n   (count log)]
                        (if (> n max-log-lines)
-                         (subvec log (- n max-log-lines))
+                         ;; `subvec` retains its backing vector, and conj-ing onto a
+                         ;; subvec keeps growing that backing — so every line ever
+                         ;; appended would stay on the heap. `into []` copies the
+                         ;; window into a fresh PersistentVector, releasing the rest.
+                         ;; (`vec` won't do — a SubVector is `vector?`, so `vec`
+                         ;; returns it unchanged.)
+                         (into [] (subvec log (- n max-log-lines)))
                          log))))
       (update :log-appends inc)))
 
