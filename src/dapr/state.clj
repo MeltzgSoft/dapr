@@ -35,8 +35,6 @@
    :log            []     ; vector of message strings (capped at max-log-lines)
    :log-appends    0      ; total lines ever appended; drives log auto-scroll
    :log-open?      false  ; whether the live log window is showing
-   :log-follow?    true   ; live log window auto-scrolls to the newest line
-   :log-scroll     0.0    ; last observed log text-area scrollTop (for freeze/detect)
    :log-file       nil    ; path of the current log file (see dapr.log)
    :error          nil})
 
@@ -321,38 +319,14 @@
   (assoc state :log-file path))
 
 (defn open-log
-  "Show the live log window, re-engaging tail-following so it opens at the newest
-  line."
+  "Show the live log window."
   [state]
-  (assoc state :log-open? true :log-follow? true))
+  (assoc state :log-open? true))
 
 (defn close-log
   "Hide the live log window."
   [state]
   (assoc state :log-open? false))
-
-(defn follow-log
-  "Re-engage tail-following (the live log window's 'jump to bottom' button), so the
-  next render snaps the view back to the newest line."
-  [state]
-  (assoc state :log-follow? true))
-
-(def ^:private log-scroll-epsilon
-  "Minimum scrollTop drop (px) treated as a deliberate scroll up, rather than
-  rounding noise from the programmatic pin-to-bottom."
-  2.0)
-
-(defn log-scrolled
-  "Record the live log text-area's new `pos` (scrollTop). A drop below the last
-  position while following means the user scrolled up to read scrollback, so
-  tail-following is disengaged (the view then freezes at `pos` until they jump back
-  to the bottom — see follow-log). Programmatic pin-to-bottom only ever increases
-  scrollTop, so it never trips this."
-  [state pos]
-  (let [pos (double pos)
-        up? (and (:log-follow? state) (< pos (- (:log-scroll state) log-scroll-epsilon)))]
-    (cond-> (assoc state :log-scroll pos)
-      up? (assoc :log-follow? false))))
 
 (defn set-error
   "Record an error message and move to the :error status."

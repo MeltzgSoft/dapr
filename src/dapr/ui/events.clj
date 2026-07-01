@@ -302,124 +302,108 @@
         (cache/snapshot! conn path)
         (log/set-dir! state-atom dir-path)))))
 
-(defonce ^:private handler*
-  ;; Holds the live event handler so raw JavaFX listeners that cljfx can't express
-  ;; as props (e.g. the log window's scrollTop listener) can feed the normal event
-  ;; flow via dispatch!.
-  (atom nil))
-
-(defn dispatch!
-  "Dispatch an event map through the current cljfx event handler (see make-handler).
-  A no-op before the handler is installed."
-  [event]
-  (when-let [h @handler*] (h event)))
-
 (defn make-handler
   "Return a cljfx event handler closing over `state-atom` and the `cache`
   component {:conn :path} that owns library/scan persistence."
   [state-atom {:keys [conn] :as cache}]
-  (reset!
-   handler*
-   (fn [event]
-     (case (:event/type event)
+  (fn [event]
+    (case (:event/type event)
       ;; settings modal
-       ::settings-open  (swap! state-atom state/open-settings)
-       ::settings-close (swap! state-atom state/close-settings)
+      ::settings-open  (swap! state-atom state/open-settings)
+      ::settings-close (swap! state-atom state/close-settings)
 
       ;; app settings — generic seam: update the in-memory map and persist to the
       ;; cache DB. Feature settings dispatch ::set-setting with {:key :value}.
-       ::set-setting    (do (swap! state-atom state/set-setting (:key event) (:value event))
-                            (cache/set-app-setting! conn (:key event) (:value event))
-                            (cache/snapshot! conn (:path cache)))
+      ::set-setting    (do (swap! state-atom state/set-setting (:key event) (:value event))
+                           (cache/set-app-setting! conn (:key event) (:value event))
+                           (cache/snapshot! conn (:path cache)))
 
       ;; library manager — the device type is chosen from the New… submenu and
       ;; pins the new library to file://, mtp:// or smb:// (editing derives it from
       ;; the existing roots)
-       ::library-new    (swap! state-atom state/set-editor
-                               {:id nil :name "" :roots []
-                                :device/type (:device/type event)})
-       ::library-edit   (when-let [l (state/library-by-id @state-atom (:id event))]
-                          (swap! state-atom state/set-editor
-                                 (assoc l :device/type (device/device-type (first (:roots l))))))
-       ::library-delete (do (cache/delete-library! conn (:id event))
-                            (cache/snapshot! conn (:path cache))
-                            (swap! state-atom state/delete-library (:id event))
-                            (refresh-libraries! state-atom conn)
-                            (future (probe-availability! state-atom)))
+      ::library-new    (swap! state-atom state/set-editor
+                              {:id nil :name "" :roots []
+                               :device/type (:device/type event)})
+      ::library-edit   (when-let [l (state/library-by-id @state-atom (:id event))]
+                         (swap! state-atom state/set-editor
+                                (assoc l :device/type (device/device-type (first (:roots l))))))
+      ::library-delete (do (cache/delete-library! conn (:id event))
+                           (cache/snapshot! conn (:path cache))
+                           (swap! state-atom state/delete-library (:id event))
+                           (refresh-libraries! state-atom conn)
+                           (future (probe-availability! state-atom)))
       ;; Mark/clear a library as the default source or sink (applied at next
       ;; launch, see start!). The current session's selection is left as-is.
-       ::library-default (do (cache/set-default! conn (:role event) (:id event))
-                             (cache/snapshot! conn (:path cache))
-                             (refresh-libraries! state-atom conn))
+      ::library-default (do (cache/set-default! conn (:role event) (:id event))
+                            (cache/snapshot! conn (:path cache))
+                            (refresh-libraries! state-atom conn))
 
       ;; editor
-       ::editor-name        (swap! state-atom state/editor-name (:fx/event event))
-       ::editor-remove-root (swap! state-atom state/editor-remove-root (:uri event))
+      ::editor-name        (swap! state-atom state/editor-name (:fx/event event))
+      ::editor-remove-root (swap! state-atom state/editor-remove-root (:uri event))
 
       ;; folder browser — each device type owns how its browser opens (see
       ;; dapr.device.*.events): file:// navigates folders directly, mtp:// first
       ;; picks a connected device, smb:// first enters a share URL + credentials.
       ;; Once a cwd is established the navigation events below are device-generic.
-       ::editor-browse        (device-events/open-browser!
-                               (get-in @state-atom [:editor :device/type]) state-atom)
-       ::browser-connect-field (swap! state-atom state/browser-field
-                                      (:field event) (:fx/event event))
-       ::browser-connect      (when (device-events/connect!
-                                     (get-in @state-atom [:browser :device/type]) state-atom)
-                                (device-events/load-browser-entries! state-atom))
-       ::browser-device       (when (device-events/choose-device!
-                                     (get-in @state-atom [:browser :device/type]) state-atom (:device event))
-                                (device-events/load-browser-entries! state-atom))
-       ::browser-enter        (do (swap! state-atom state/browser-enter (:child event))
-                                  (device-events/load-browser-entries! state-atom))
-       ::browser-crumb        (do (swap! state-atom state/browser-to-crumb (:idx event))
-                                  (device-events/load-browser-entries! state-atom))
-       ::browser-places       (do (swap! state-atom state/browser-to-places)
-                                  (device-events/load-browser-entries! state-atom))
-       ::browser-select (when-let [uri (get-in @state-atom [:browser :cwd])]
-                          (if (lib/root-addable? (get-in @state-atom [:editor :roots]) uri)
-                            (swap! state-atom (fn [s] (-> s
-                                                          (state/editor-add-root uri)
-                                                          (state/browser-close))))
-                            (t/log! mixed-device-msg)))
-       ::browser-cancel (swap! state-atom state/browser-close)
+      ::editor-browse        (device-events/open-browser!
+                              (get-in @state-atom [:editor :device/type]) state-atom)
+      ::browser-connect-field (swap! state-atom state/browser-field
+                                     (:field event) (:fx/event event))
+      ::browser-connect      (when (device-events/connect!
+                                    (get-in @state-atom [:browser :device/type]) state-atom)
+                               (device-events/load-browser-entries! state-atom))
+      ::browser-device       (when (device-events/choose-device!
+                                    (get-in @state-atom [:browser :device/type]) state-atom (:device event))
+                               (device-events/load-browser-entries! state-atom))
+      ::browser-enter        (do (swap! state-atom state/browser-enter (:child event))
+                                 (device-events/load-browser-entries! state-atom))
+      ::browser-crumb        (do (swap! state-atom state/browser-to-crumb (:idx event))
+                                 (device-events/load-browser-entries! state-atom))
+      ::browser-places       (do (swap! state-atom state/browser-to-places)
+                                 (device-events/load-browser-entries! state-atom))
+      ::browser-select (when-let [uri (get-in @state-atom [:browser :cwd])]
+                         (if (lib/root-addable? (get-in @state-atom [:editor :roots]) uri)
+                           (swap! state-atom (fn [s] (-> s
+                                                         (state/editor-add-root uri)
+                                                         (state/browser-close))))
+                           (t/log! mixed-device-msg)))
+      ::browser-cancel (swap! state-atom state/browser-close)
 
-       ::editor-save
-       (let [library (select-keys (:editor @state-atom) [:id :name :roots])]
-         (if (lib/library-valid? library)
-           (do (cache/upsert-library! conn library)
-               (cache/snapshot! conn (:path cache))
-               (refresh-libraries! state-atom conn)
-               (swap! state-atom state/cancel-editor)
-               (future (probe-availability! state-atom)))
-           (t/log! "Library needs a name and at least one file://, mtp:// or smb:// root.")))
-       ::editor-cancel (swap! state-atom state/cancel-editor)
+      ::editor-save
+      (let [library (select-keys (:editor @state-atom) [:id :name :roots])]
+        (if (lib/library-valid? library)
+          (do (cache/upsert-library! conn library)
+              (cache/snapshot! conn (:path cache))
+              (refresh-libraries! state-atom conn)
+              (swap! state-atom state/cancel-editor)
+              (future (probe-availability! state-atom)))
+          (t/log! "Library needs a name and at least one file://, mtp:// or smb:// root.")))
+      ::editor-cancel (swap! state-atom state/cancel-editor)
 
       ;; sync workflow
-       ::select-source (do (swap! state-atom state/select-source
-                                  (library-id-by-name state-atom (:fx/event event)))
-                           (future (reload-catalogs! state-atom cache)))
-       ::select-sink   (do (swap! state-atom state/select-sink
-                                  (library-id-by-name state-atom (:fx/event event)))
-                           (future (reload-catalogs! state-atom cache)))
-       ::toggle-track  (swap! state-atom state/toggle-track (:key event))
+      ::select-source (do (swap! state-atom state/select-source
+                                 (library-id-by-name state-atom (:fx/event event)))
+                          (future (reload-catalogs! state-atom cache)))
+      ::select-sink   (do (swap! state-atom state/select-sink
+                                 (library-id-by-name state-atom (:fx/event event)))
+                          (future (reload-catalogs! state-atom cache)))
+      ::toggle-track  (swap! state-atom state/toggle-track (:key event))
 
       ;; column-browser filter — the list's "All" entry (and a cleared selection)
       ;; both mean no constraint (nil).
-       ::filter-artist (swap! state-atom state/set-filter-artist (filter-value (:fx/event event)))
-       ::filter-album  (swap! state-atom state/set-filter-album (filter-value (:fx/event event)))
-       ::filter-search-artist (swap! state-atom state/set-filter-search :artist (:fx/event event))
-       ::filter-search-album  (swap! state-atom state/set-filter-search :album (:fx/event event))
-       ::refresh-availability (future (refresh-availability! state-atom cache))
-       ::preview       (future (run-preview! state-atom))
-       ::sync          (future (run-sync! state-atom cache))
+      ::filter-artist (swap! state-atom state/set-filter-artist (filter-value (:fx/event event)))
+      ::filter-album  (swap! state-atom state/set-filter-album (filter-value (:fx/event event)))
+      ::filter-search-artist (swap! state-atom state/set-filter-search :artist (:fx/event event))
+      ::filter-search-album  (swap! state-atom state/set-filter-search :album (:fx/event event))
+      ::refresh-availability (future (refresh-availability! state-atom cache))
+      ::preview       (future (run-preview! state-atom))
+      ::sync          (future (run-sync! state-atom cache))
 
       ;; logging — the live log window + its log-dir picker
-       ::view-logs      (swap! state-atom state/open-log)
-       ::log-close      (swap! state-atom state/close-log)
-       ::log-follow     (swap! state-atom state/follow-log)
-       ::log-scrolled   (swap! state-atom state/log-scrolled (:fx/event event))
-       ::choose-log-dir (choose-log-dir! state-atom cache)
+      ::view-logs      (swap! state-atom state/open-log)
+      ::log-close      (swap! state-atom state/close-log)
+      ::choose-log-dir (choose-log-dir! state-atom cache)
 
-       ::quit          (do (Platform/exit) (System/exit 0))
-       nil))))
+      ::quit          (do (Platform/exit) (System/exit 0))
+      nil)))
