@@ -56,19 +56,19 @@ lint + cljfmt clean.**
 - `docs/feature-plan.md` is otherwise kept untracked to follow across branches, but
   it is committed on `feat/sink-only-tracks`.
 
-### Next up: `feat/theming` (6) ✅ DONE. `feat/logging` (2) ✅ **DONE** — base plus
-**both follow-ups landed**: A (the `append-log` leak fix, commit `0bf0690`) and B
-(the live-log tail-follow/freeze/jump-to-bottom, re-done on a **ListView** instead of
-the reverted TextArea, commit `28d45e5`). Then remaining order:
-`feat/shift-select` (8) → `ci/release-uberjar` (9). Spikes (3, 4) anytime.
-(See per-feature blocks below.)
+### Next up: `feat/theming` (6) ✅ DONE. `feat/logging` (2) ✅ DONE (base + both
+follow-ups: A leak fix `0bf0690`, B ListView scroll UX `28d45e5`). Feature 8 ✅ **DONE**
+but **rescoped**: `feat/shift-select` (range-select) was built then removed at the
+user's request and replaced with `feat/facet-toggle` — double-click an artist/album
+facet to (de)select its tracks (commit `b4729fe`, stacked on `feat/logging`).
+**Remaining:** `ci/release-uberjar` (9). Spikes (3, 4) anytime.
 
-**Branch/commit state for continuing elsewhere:** on `feat/logging` at `28d45e5`.
-Pull the branch, `clojure -M:test` should be green (76 tests). Feature 2 is
-code-complete; the ListView scroll UX (freeze on scroll-up, ⤓ jump-to-bottom) is
-unit-tested at the state layer but its **JavaFX interaction wants a manual smoke**
-(open View ▸ View Logs…, run a scan to stream lines, scroll up mid-stream → view
-should freeze, ⤓ should snap back and re-follow). Next feature: `feat/shift-select`.
+**Branch/commit state for continuing elsewhere:** on `feat/facet-toggle` at `b4729fe`
+(off `feat/logging` at `28d45e5`). Pull the branch, `clojure -M:test` should be green
+(78 tests). Features 2 and 8 are code-complete but each **wants a manual GUI smoke**
+(see their per-feature blocks) — the JavaFX interactions (log scroll-freeze;
+facet double-click toggle) are only unit-tested at the state layer.
+Next feature: `ci/release-uberjar` (9).
 
 ---
 
@@ -352,20 +352,39 @@ settings modal). **Status:** ✅ **DONE** on `feat/theming`.
 
 ---
 
-## 8. `feat/shift-select` — range-select tracks
-Selection is via the custom checkbox column, not the table's selection model, so
-shift needs the modifier from a mouse event (`check-box`'s `on-selected-changed`
-carries no modifiers).
-- [ ] `state.clj`: `:select-anchor` (last toggled row index) + `select-range`
-      transition.
-- [ ] `ui/views.clj` `track-rows`: include each row's index; `check-column` cell
-      adds `:on-mouse-clicked` reading `MouseEvent#isShiftDown` + row index,
-      dispatching `::toggle-range` when shift held (else `::toggle-track`, which
-      sets the anchor).
-- [ ] `ui/events.clj`: handle range toggle, honoring per-track capacity
-      (`cap/row-fits?`) for adds.
+## 8. `feat/facet-toggle` — double-click an artist/album facet to (de)select its tracks
+**Scope changed from the original `feat/shift-select`.** Shift-click range-select was
+built then **removed** at the user's request in favour of a simpler group toggle:
+double-clicking a column-browser Artist or Album facet checks every track under it (or
+unchecks them all if already selected). Renamed the branch to `feat/facet-toggle`.
+- [x] `state.clj`: `toggle-keys` — batch group toggle (all-on ⇒ deselect all, else
+      select those that fit the sink budget per-track via `cap/would-fit?`);
+      `track-locked?` — a sink-only `:keep`/`:add-to-source` track is dropped from the
+      group so it stays locked-on.
+- [x] `ui/events.clj`: `facet-toggle!` reads `MouseEvent#getClickCount` (double only)
+      and the list's selected item, resolves matching keys via `fmt/filter-catalog`
+      over the **union** catalog (an album scoped to the active artist filter so
+      same-named albums don't collide), then `state/toggle-keys`.
+- [x] `ui/views.clj`: `filter-column` gains a `toggle-event` → `:on-mouse-clicked` on
+      the facet list + a discoverability tooltip; wired for both columns. Single-click
+      still selects/filters.
+- [x] Tests: `state_test` (`track-locked?`, `toggle-keys`: select / deselect-when-all
+      / budget-skip / locked-untouched). 78 tests green; lint + cljfmt clean.
 
-**Status:** not started
+**Design notes:**
+- Single-click and double-click coexist on the same list: `:on-selected-item-changed`
+  sets the filter, `:on-mouse-clicked` fires for every click but `facet-toggle!`
+  ignores anything but click-count 2 — no double-fire.
+- `track-locked?` guard matters: without it, deselecting a locked sink-only track from
+  `:selected` would skew the capacity `:used` even though `track-rows` forces it
+  visually on. The whole toggle stays in the pure layer (testable), the events layer
+  only extracts the JavaFX bits.
+
+**Status:** ✅ **DONE** on `feat/facet-toggle` (stacked on `feat/logging`, commit
+`b4729fe`). Unit green, lint + cljfmt clean. **Wants a manual smoke:** double-click an
+artist → all its tracks check; double-click again → they uncheck; double-click when
+the sink is nearly full → only the tracks that fit get checked; the "All" entry and a
+red sink-only album under `:keep` are left alone.
 
 ---
 
