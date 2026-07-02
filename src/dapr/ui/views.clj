@@ -235,11 +235,11 @@
 (defn- filter-column
   "One column of the iTunes-style browser: a header (with a count), a search field
   that narrows the list as you type, and a virtualized list whose first entry is
-  'All'. Selecting an entry dispatches `select-event` ('All' is normalized to nil
-  in the handler); typing dispatches `search-event`; double-clicking an entry
-  dispatches `toggle-event`, which checks/unchecks every track under it (see
-  events/facet-toggle!)."
-  [title values search-text search-event select-event toggle-event]
+  'All'. Clicking an entry dispatches `click-event`: a single click filters by it
+  ('All' clears the filter), a double-click checks/unchecks every track under it
+  without narrowing the view (see events/facet-click!). Typing dispatches
+  `search-event`."
+  [title values search-text search-event click-event]
   {:fx/type     :v-box
    :h-box/hgrow :always
    :spacing     2
@@ -255,11 +255,10 @@
                   :v-box/vgrow :always
                   :items       (into ["All"] values)
                   :tooltip     {:fx/type :tooltip
-                                :text "Double-click to check/uncheck all its tracks"}
-                  :on-selected-item-changed {:event/type select-event}
-                  ;; Single click selects (sets the filter); a double-click toggles
-                  ;; the whole group — facet-toggle! ignores non-double clicks.
-                  :on-mouse-clicked {:event/type toggle-event}}]})
+                                :text "Click to filter · double-click to check/uncheck all its tracks"}
+                  ;; Filter on click-count (not the selection model) so a double-click
+                  ;; can toggle the group without leaving the view filtered.
+                  :on-mouse-clicked {:event/type click-event}}]})
 
 (defn- filter-browser
   "iTunes-style column browser: an Artist column and an Album column scoped to the
@@ -274,11 +273,9 @@
      ;; Floor so the browser can't be dragged shut entirely.
      :min-height 80
      :children   [(filter-column "Artist" artists (:artist filter-search)
-                                 ::events/filter-search-artist ::events/filter-artist
-                                 ::events/facet-toggle-artist)
+                                 ::events/filter-search-artist ::events/facet-click-artist)
                   (filter-column "Album" albums (:album filter-search)
-                                 ::events/filter-search-album ::events/filter-album
-                                 ::events/facet-toggle-album)]}))
+                                 ::events/filter-search-album ::events/facet-click-album)]}))
 
 (defn- track-table
   "The source-track picker as a virtualized TableView: JavaFX realizes only the
