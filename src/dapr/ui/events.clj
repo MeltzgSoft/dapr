@@ -20,10 +20,13 @@
             [dapr.ui.format :as fmt]
             [datascript.core :as d]
             [taoensso.telemere :as t])
-  (:import (javafx.application Platform)
+  (:import (javafx.animation PauseTransition)
+           (javafx.application Platform)
+           (javafx.event EventHandler)
            (javafx.scene.control ListView)
            (javafx.scene.input MouseEvent)
-           (javafx.stage DirectoryChooser)))
+           (javafx.stage DirectoryChooser)
+           (javafx.util Duration)))
 
 (defn- refresh-libraries!
   "Re-read the library projection in state from the cache DB (the system of
@@ -316,27 +319,55 @@
   [pos]
   (some-> @state-atom* (swap! state/log-scrolled pos)))
 
+(def ^:private facet-single-click-millis
+  "Delay before a single facet click applies its filter — long enough for a second
+  click to arrive and be treated as a double-click (which toggles without filtering),
+  so the first click of a double never flashes the view narrowed."
+  250.0)
+
+(defonce ^:private pending-facet-click*
+  ;; The scheduled single-click filter (a PauseTransition), held so a following click
+  ;; can cancel it before it fires. One is enough — any new click supersedes it.
+  (atom nil))
+
+(defn- cancel-pending-facet-click! []
+  (when-let [^PauseTransition p @pending-facet-click*]
+    (.stop p)
+    (reset! pending-facet-click* nil)))
+
 (defn- facet-click!
   "Handle a click on a column-browser facet list for column `col` (:artist/:album).
   Filtering is driven from the click (not the selection model) so a double-click can
-  leave the view unnarrowed: a **single** click applies the clicked facet as the
-  filter, remembering the one it replaces; a **double** click restores that remembered
-  filter (undoing its own first click) and instead toggles selection of every track
-  under the facet. Matching keys come from the union catalog via fmt/filter-catalog —
-  an album is scoped to the active artist filter so same-named albums across artists
-  don't collide. The 'All' entry clears the filter but toggles nothing."
+  leave the view unnarrowed. A **single** click applies the clicked facet as the
+  filter, but only after a short delay — if a second click lands first it's a
+  **double** click, which cancels the pending filter and instead toggles selection of
+  every track under the facet (never touching the filter). Matching keys come from the
+  union catalog via fmt/filter-catalog — an album is scoped to the active artist filter
+  so same-named albums across artists don't collide. The 'All' entry clears the filter
+  but toggles nothing."
   [state-atom col ^MouseEvent ev]
   (let [item  (.getSelectedItem (.getSelectionModel ^ListView (.getSource ev)))
         value (when (and (string? item) (not= "All" item)) item)]
+    (cancel-pending-facet-click!)
     (if (= 2 (.getClickCount ev))
-      (let [{:keys [source-catalog sink-catalog filter]} @state-atom
-            flt (case col
-                  :artist {:artist value :album nil}
-                  :album  {:artist (:artist filter) :album value})
-            ks  (when value (keys (fmt/filter-catalog (merge sink-catalog source-catalog) flt)))]
-        (swap! state-atom #(cond-> (state/restore-filter %)
-                             (seq ks) (state/toggle-keys ks))))
-      (swap! state-atom state/apply-facet-filter col value))))
+      (when value
+        (let [{:keys [source-catalog sink-catalog filter]} @state-atom
+              flt (case col
+                    :artist {:artist value :album nil}
+                    :album  {:artist (:artist filter) :album value})
+              ks  (keys (fmt/filter-catalog (merge sink-catalog source-catalog) flt))]
+          (swap! state-atom state/toggle-keys ks)))
+      (let [set-filter (case col
+                         :artist state/set-filter-artist
+                         :album  state/set-filter-album)
+            p          (doto (PauseTransition. (Duration/millis facet-single-click-millis))
+                         (.setOnFinished
+                          (reify EventHandler
+                            (handle [_ _]
+                              (reset! pending-facet-click* nil)
+                              (swap! state-atom set-filter value)))))]
+        (reset! pending-facet-click* p)
+        (.play p)))))
 
 (defn make-handler
   "Return a cljfx event handler closing over `state-atom` and the `cache`
