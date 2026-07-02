@@ -60,15 +60,28 @@ lint + cljfmt clean.**
 follow-ups: A leak fix `0bf0690`, B ListView scroll UX `28d45e5`). Feature 8 ✅ **DONE**
 but **rescoped**: `feat/shift-select` (range-select) was built then removed at the
 user's request and replaced with `feat/facet-toggle` — double-click an artist/album
-facet to (de)select its tracks (commit `b4729fe`, stacked on `feat/logging`).
-**Remaining:** `ci/release-uberjar` (9). Spikes (3, 4) anytime.
+facet to (de)select its tracks, with single-click filtering deferred so a double-click
+never flashes the view filtered (`b4729fe` + fixes through `8f7e216`, stacked on
+`feat/logging`). **Remaining:** `ci/release-uberjar` (9). Spikes (3, 4) anytime.
 
-**Branch/commit state for continuing elsewhere:** on `feat/facet-toggle` at `b4729fe`
+**Branch/commit state for continuing elsewhere:** on `feat/facet-toggle` at `8f7e216`
 (off `feat/logging` at `28d45e5`). Pull the branch, `clojure -M:test` should be green
-(78 tests). Features 2 and 8 are code-complete but each **wants a manual GUI smoke**
-(see their per-feature blocks) — the JavaFX interactions (log scroll-freeze;
-facet double-click toggle) are only unit-tested at the state layer.
-Next feature: `ci/release-uberjar` (9).
+(78 tests); clj-kondo + cljfmt clean; no new reflection warnings. Features 2 and 8 are
+code-complete but each **wants a manual GUI smoke** (see their per-feature blocks) —
+the JavaFX interactions are only unit-tested at the state layer:
+- **Feature 2 (logging):** open View ▸ View Logs…, run a scan to stream lines; the
+  view follows the tail; scroll up mid-stream → it freezes; ⤓ re-follows.
+- **Feature 8 (facet-toggle):** single-click an artist → view filters after a ~250ms
+  beat; double-click one → its tracks toggle and the view does **not** narrow;
+  double-click again → they untoggle; near-full sink → only tracks that fit get
+  checked; the "All" entry and a red sink-only album under `:keep` are left alone.
+
+**Landing order (none pushed except `origin/feat/logging`):** these are stacked —
+`feat/logging` (28d45e5, +4 ahead of origin) → `feat/facet-toggle` (8f7e216). Merge
+`feat/logging` first, then `feat/facet-toggle`. `feat/facet-toggle` still carries
+feature 2's commits in its history.
+
+Next feature: `ci/release-uberjar` (9) — CI/build only, no GUI, fully verifiable here.
 
 ---
 
@@ -390,11 +403,13 @@ unchecks them all if already selected). Renamed the branch to `feat/facet-toggle
   visually on. The whole toggle stays in the pure layer (testable), the events layer
   only extracts the JavaFX bits.
 
-**Status:** ✅ **DONE** on `feat/facet-toggle` (stacked on `feat/logging`, commit
-`b4729fe`). Unit green, lint + cljfmt clean. **Wants a manual smoke:** double-click an
-artist → all its tracks check; double-click again → they uncheck; double-click when
-the sink is nearly full → only the tracks that fit get checked; the "All" entry and a
-red sink-only album under `:keep` are left alone.
+**Status:** ✅ **DONE** on `feat/facet-toggle` (stacked on `feat/logging`; `b4729fe`
+feature + filter fixes through `8f7e216`, tip). 78 tests green; clj-kondo + cljfmt
+clean; no reflection warnings. **Wants a manual smoke:** single-click an artist → view
+filters after a ~250ms beat; double-click an artist → all its tracks check and the view
+does **not** narrow; double-click again → they uncheck; double-click when the sink is
+nearly full → only the tracks that fit get checked; the "All" entry and a red sink-only
+album under `:keep` are left alone.
 
 ---
 
