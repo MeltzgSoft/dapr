@@ -3,6 +3,10 @@
  ;; Configure logging once the state atom exists but before the renderer starts
  ;; scanning, so file + live-log output captures everything from launch.
  :dapr/log      {:cache #ig/ref :dapr/cache :state-atom #ig/ref :dapr/state}
+ ;; Halt-only component: closes the SMB FileSystem cache and the MTP device bridge on
+ ;; shutdown. The renderer refs it so it halts *after* the UI (and any scan) is down.
+ :dapr/devices  {}
  :dapr/renderer {:state-atom #ig/ref :dapr/state
                  :cache      #ig/ref :dapr/cache
-                 :log        #ig/ref :dapr/log}}
+                 :log        #ig/ref :dapr/log
+                 :devices    #ig/ref :dapr/devices}}

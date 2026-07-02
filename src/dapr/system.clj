@@ -6,6 +6,8 @@
   (:require [cljfx.api :as fx]
             [clojure.java.io :as io]
             [dapr.cache :as cache]
+            [dapr.device.mtp.fs :as mtp-fs]
+            [dapr.device.smb.fs :as smb-fs]
             [dapr.library.store :as store]
             [dapr.log :as log]
             [dapr.state :as state]
@@ -16,7 +18,7 @@
   (:import (javafx.application Platform)
            (javafx.beans.value ChangeListener)))
 
-(defn config
+(defn config!
   "Read the Integrant system configuration from resources/config.edn."
   []
   (-> (io/resource "config.edn")
@@ -59,6 +61,18 @@
 
 (defmethod ig/halt-key! :dapr/log [_ _]
   (log/shutdown!))
+
+(defmethod ig/init-key :dapr/devices [_ _]
+  ;; Owns no state of its own. The SMB FileSystem cache and the MTP device bridge are
+  ;; process-globals reached via the java.nio provider SPI (the device-generic scan
+  ;; walker resolves a root URI to a Path with no component in hand), so this component
+  ;; exists only to close those external sessions on halt — SMB so jcifs's non-daemon
+  ;; connection threads don't outlive the app, MTP so the device isn't left locked.
+  {})
+
+(defmethod ig/halt-key! :dapr/devices [_ _]
+  (smb-fs/close-all!)
+  (mtp-fs/close!))
 
 (defn- color-scheme->kw
   "Map a javafx.application.ColorScheme to :dark/:light (nil when unrecognized)."
