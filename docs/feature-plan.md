@@ -372,9 +372,15 @@ unchecks them all if already selected). Renamed the branch to `feat/facet-toggle
       / budget-skip / locked-untouched). 78 tests green; lint + cljfmt clean.
 
 **Design notes:**
-- Single-click and double-click coexist on the same list: `:on-selected-item-changed`
-  sets the filter, `:on-mouse-clicked` fires for every click but `facet-toggle!`
-  ignores anything but click-count 2 — no double-fire.
+- **Filtering is click-count-driven, not selection-model-driven** (`4aa1434`).
+  Originally `:on-selected-item-changed` set the filter, so a double-click's *first*
+  click narrowed the view before the toggle. Since selection-changed fires before our
+  `:on-mouse-clicked` (ordering we can't undo, and the already-filtered facet produces
+  no selection-changed at all), the fix moved filtering onto `:on-mouse-clicked`:
+  single click ⇒ `apply-facet-filter` (stash `:filter-prev` + apply); double click ⇒
+  `restore-filter` (undo the first click) + `toggle-keys`. Self-consistent because
+  `:filter-prev` is captured on the double's own first click. Trade-off: keyboard
+  arrow-key facet navigation no longer filters (the browser is mouse-driven anyway).
 - `track-locked?` guard matters: without it, deselecting a locked sink-only track from
   `:selected` would skew the capacity `:used` even though `track-rows` forces it
   visually on. The whole toggle stays in the pure layer (testable), the events layer
