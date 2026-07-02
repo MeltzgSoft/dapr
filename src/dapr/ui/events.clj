@@ -21,6 +21,8 @@
             [datascript.core :as d]
             [taoensso.telemere :as t])
   (:import (javafx.application Platform)
+           (javafx.scene.control ListView)
+           (javafx.scene.input MouseEvent)
            (javafx.stage DirectoryChooser)))
 
 (defn- refresh-libraries!
@@ -320,6 +322,24 @@
   [pos]
   (some-> @state-atom* (swap! state/log-scrolled pos)))
 
+(defn- facet-toggle!
+  "Double-clicking a column-browser facet toggles selection of every track under it.
+  `col` is :artist or :album; the clicked value is the list's currently-selected item
+  (a single click already selected it and set the filter). Matching keys come from the
+  union catalog via fmt/filter-catalog — an album is scoped to the active artist filter
+  so same-named albums across artists don't collide. Ignores non-double clicks and the
+  \"All\" entry."
+  [state-atom col ^MouseEvent ev]
+  (when (= 2 (.getClickCount ev))
+    (let [value (.getSelectedItem (.getSelectionModel ^ListView (.getSource ev)))]
+      (when (and (string? value) (not= "All" value))
+        (let [{:keys [source-catalog sink-catalog filter]} @state-atom
+              flt (case col
+                    :artist {:artist value :album nil}
+                    :album  {:artist (:artist filter) :album value})
+              ks  (keys (fmt/filter-catalog (merge sink-catalog source-catalog) flt))]
+          (swap! state-atom state/toggle-keys ks))))))
+
 (defn make-handler
   "Return a cljfx event handler closing over `state-atom` and the `cache`
   component {:conn :path} that owns library/scan persistence."
@@ -415,6 +435,10 @@
       ::filter-album  (swap! state-atom state/set-filter-album (filter-value (:fx/event event)))
       ::filter-search-artist (swap! state-atom state/set-filter-search :artist (:fx/event event))
       ::filter-search-album  (swap! state-atom state/set-filter-search :album (:fx/event event))
+
+      ;; double-click a facet to toggle every track under that artist/album
+      ::facet-toggle-artist (facet-toggle! state-atom :artist (:fx/event event))
+      ::facet-toggle-album  (facet-toggle! state-atom :album (:fx/event event))
       ::refresh-availability (future (refresh-availability! state-atom cache))
       ::preview       (future (run-preview! state-atom))
       ::sync          (future (run-sync! state-atom cache))

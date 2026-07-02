@@ -145,6 +145,43 @@
       (let [s (-> base (state/toggle-track ["a" 10]) (state/toggle-track ["a" 10]))]
         (is (= #{} (:selected s)))))))
 
+(deftest track-locked-test
+  (let [source {["a" 10] {:size 10 :key ["a" 10]}}
+        sink   {["a" 10] {:size 10 :key ["a" 10]}
+                ["s" 5]  {:size 5 :key ["s" 5]}}   ; s is sink-only
+        base   (state/set-catalogs state/initial-state source sink 100)]
+    (testing "a sink-only track is locked under :keep (the default handling)"
+      (is (true? (state/track-locked? base ["s" 5])))
+      (is (false? (state/track-locked? base ["a" 10]))))   ; present in source
+    (testing "not locked once handling is :delete"
+      (let [d (state/set-setting base :sink-only-handling :delete)]
+        (is (false? (state/track-locked? d ["s" 5])))))))
+
+(deftest toggle-keys-test
+  (let [source (into {} (for [i (range 4)] [["t" i] {:size 10 :key ["t" i]}]))
+        base   (state/set-catalogs state/initial-state source {} 100)] ; budget 100
+    (testing "selects all matching keys when none/some are selected"
+      (let [s (state/toggle-keys base [["t" 0] ["t" 1] ["t" 2]])]
+        (is (= #{["t" 0] ["t" 1] ["t" 2]} (:selected s)))
+        (is (= 30 (get-in s [:capacity :used])))))
+    (testing "deselects all when every matching key is already selected"
+      (let [on  (state/toggle-keys base [["t" 0] ["t" 1]])
+            off (state/toggle-keys on [["t" 0] ["t" 1]])]
+        (is (= #{} (:selected off)))))
+    (testing "skips keys that don't fit once the budget is exhausted"
+      (let [tight (state/set-catalogs state/initial-state source {} 25)] ; fits two 10s
+        (is (= 2 (count (:selected (state/toggle-keys
+                                    tight [["t" 0] ["t" 1] ["t" 2]])))))))
+    (testing "leaves a locked sink-only track untouched (not in the toggle group)"
+      (let [src  {["a" 10] {:size 10 :key ["a" 10]}}   ; source-only, off by default
+            snk  {["s" 5]  {:size 5 :key ["s" 5]}}      ; sink-only, locked-on under :keep
+            b    (state/set-catalogs state/initial-state src snk 100) ; s pre-selected
+            s    (state/toggle-keys b [["a" 10] ["s" 5]])]
+        ;; "a" is off and "s" is locked (dropped from the group), so this selects
+        ;; "a"; the locked "s" stays selected regardless.
+        (is (contains? (:selected s) ["a" 10]))
+        (is (contains? (:selected s) ["s" 5]))))))
+
 (deftest editor-test
   (testing "build, edit fields, add/remove roots"
     (let [s (-> state/initial-state
