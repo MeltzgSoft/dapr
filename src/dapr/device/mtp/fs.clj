@@ -48,6 +48,17 @@
            (first))
       id-str))
 
+(defn close!
+  "Close the MTP device bridge, releasing every open native device session so the
+  device isn't left locked for other apps. Best-effort: no device / no native libmtp
+  means nothing to close (mirrors devices!, which degrades to empty on any native
+  error). The bridge resets itself on close and re-detects on the next getInstance,
+  so this is safe across a REPL reset."
+  []
+  (try
+    (.close (MTPDeviceBridge/getInstance))
+    (catch Throwable _ nil)))
+
 (defn devices!
   "Detect connected MTP devices and return a vector of endpoints
   {:id <vendor:product:serial> :name <display-name> :uri \"mtp://<id>/\"}."

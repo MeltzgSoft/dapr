@@ -10,7 +10,7 @@
 
 (defn -main [& _args]
   (Platform/setImplicitExit true)
-  (let [sys (ig/init (system/config))]
+  (let [sys (ig/init (system/config!))]
     (.addShutdownHook (Runtime/getRuntime)
                       (Thread. ^Runnable (fn [] (ig/halt! sys))))
     sys))

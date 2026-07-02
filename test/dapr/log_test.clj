@@ -18,17 +18,17 @@
     (is (= (System/getProperty "java.io.tmpdir") (log/log-dir {})))
     (is (= (System/getProperty "java.io.tmpdir") (log/log-dir nil)))))
 
-(deftest next-log-file-test
+(deftest next-log-file!-test
   (let [dir (temp-dir)]
     (testing "starts at dapr.0.log in an empty dir"
-      (is (= (.getPath (io/file dir "dapr.0.log")) (log/next-log-file dir))))
+      (is (= (.getPath (io/file dir "dapr.0.log")) (log/next-log-file! dir))))
     (testing "skips existing logs to the next free integer"
       (spit (io/file dir "dapr.0.log") "")
       (spit (io/file dir "dapr.1.log") "")
-      (is (= (.getPath (io/file dir "dapr.2.log")) (log/next-log-file dir))))
+      (is (= (.getPath (io/file dir "dapr.2.log")) (log/next-log-file! dir))))
     (testing "creates the directory when missing"
       (let [sub (str (io/file dir "sub" "deeper"))]
-        (is (= (.getPath (io/file sub "dapr.0.log")) (log/next-log-file sub)))
+        (is (= (.getPath (io/file sub "dapr.0.log")) (log/next-log-file! sub)))
         (is (.isDirectory (io/file sub)))))))
 
 (deftest signal->line-test

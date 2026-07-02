@@ -14,7 +14,7 @@
             [dapr.device.fs :as device-fs]
             [dapr.device.smb.fs :as smb]
             [dapr.fs.nio :as nio])
-  (:import (java.nio.file Files Path)
+  (:import (java.nio.file FileSystem Files Path)
            (java.nio.file.attribute FileAttribute)
            (org.testcontainers.containers FixedHostPortGenericContainer)
            (org.testcontainers.containers.wait.strategy Wait)))
@@ -122,3 +122,16 @@
   (when (running?)
     (testing "library-free! reports the share's free space as a positive number"
       (is (pos? (nio/library-free! [guest-url]))))))
+
+(deftest close-all!-test
+  (when (running?)
+    (testing "close-all! closes the cached FileSystem"
+      (let [path             (device-fs/root-path! guest-url)
+            ^FileSystem fs   (.getFileSystem path)]
+        (is (.isOpen fs) "sanity: resolving a root opens (and caches) its FileSystem")
+        (smb/close-all!)
+        (is (not (.isOpen fs)) "close-all! should close the cached FileSystem")))
+    (testing "the cache reopens on demand after close-all! (safe across a system reset)"
+      (let [names (set (map :name (device-fs/dir-children! "smb://127.0.0.1/")))]
+        (is (contains? names "Music")
+            (str "operations should work again after close-all!, got " names))))))

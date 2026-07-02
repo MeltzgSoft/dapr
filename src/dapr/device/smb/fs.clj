@@ -16,7 +16,8 @@
   (:require [clojure.string :as str]
             [dapr.device.fs :as dfs]
             [dapr.device.smb.format :as smb-format]
-            [dapr.fs.credentials :as credentials])
+            [dapr.fs.credentials :as credentials]
+            [taoensso.telemere :as t])
   (:import (java.net URI)
            (java.nio.file FileSystem FileSystems Files LinkOption Path)))
 
@@ -82,6 +83,20 @@
   ^Path [uri-str]
   (let [uri (URI. ^String uri-str)]
     (.getPath (open-filesystem! uri) (share-path uri) (make-array String 0))))
+
+(defn close-all!
+  "Close every cached SMB FileSystem and clear the cache. Called on system halt so
+  jcifs's non-daemon connection threads don't keep the JVM alive past shutdown.
+  Best-effort per host — a close failure is logged and the rest still close."
+  []
+  (locking open-lock
+    (doseq [[host ^FileSystem fs] @filesystems]
+      (try
+        (when (.isOpen fs) (.close fs))
+        (catch Exception e
+          (t/log! {:level :warn :error e
+                   :msg   (str "Failed to close SMB FileSystem for " host)}))))
+    (reset! filesystems {})))
 
 (defmethod dfs/root-path! :smb [uri-str]
   (resolve-root-path! uri-str))

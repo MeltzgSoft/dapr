@@ -26,7 +26,7 @@
   [settings]
   (or (:log-dir settings) (System/getProperty "java.io.tmpdir")))
 
-(defn next-log-file
+(defn next-log-file!
   "Path of the next free `dapr.N.log` in `dir` — the smallest unused N from 0 — so a
   new launch never overwrites an earlier run's log. Creates `dir` if needed."
   [dir]
@@ -49,7 +49,7 @@
   `state-atom` (so the settings UI can show it), and announce it. Returns the path."
   [state-atom dir]
   (t/remove-handler! :dapr/file)
-  (let [path (next-log-file dir)]
+  (let [path (next-log-file! dir)]
     (t/add-handler! :dapr/file (t/handler:file {:path path}))
     (swap! state-atom state/set-log-file path)
     (t/log! (str "Logging to " path))
