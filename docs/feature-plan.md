@@ -372,15 +372,19 @@ unchecks them all if already selected). Renamed the branch to `feat/facet-toggle
       / budget-skip / locked-untouched). 78 tests green; lint + cljfmt clean.
 
 **Design notes:**
-- **Filtering is click-count-driven, not selection-model-driven** (`4aa1434`).
-  Originally `:on-selected-item-changed` set the filter, so a double-click's *first*
-  click narrowed the view before the toggle. Since selection-changed fires before our
-  `:on-mouse-clicked` (ordering we can't undo, and the already-filtered facet produces
-  no selection-changed at all), the fix moved filtering onto `:on-mouse-clicked`:
-  single click ⇒ `apply-facet-filter` (stash `:filter-prev` + apply); double click ⇒
-  `restore-filter` (undo the first click) + `toggle-keys`. Self-consistent because
-  `:filter-prev` is captured on the double's own first click. Trade-off: keyboard
-  arrow-key facet navigation no longer filters (the browser is mouse-driven anyway).
+- **Filtering is click-driven, not selection-model-driven, and single-click is
+  deferred** (`4aa1434` → `ff77835`). Originally `:on-selected-item-changed` set the
+  filter, so a double-click's *first* click narrowed the view before the toggle.
+  First fix (`4aa1434`) moved filtering onto `:on-mouse-clicked` and *restored* the
+  filter on the second click — but that still flashed the view narrowed between the
+  two clicks. Final fix (`ff77835`) disambiguates single vs double the only way you
+  can: a single click schedules its filter via a 250ms `PauseTransition`
+  (`facet-single-click-millis`); a second click cancels the pending filter and toggles
+  the group, so a double-click **never** applies the filter (no flash). One
+  module-level `pending-facet-click*` atom holds the transition; any new click
+  supersedes it. Trade-offs: single-click filtering lands ~250ms after the click (the
+  double-click window), and keyboard arrow-key facet navigation no longer filters (the
+  browser is mouse-driven anyway).
 - `track-locked?` guard matters: without it, deselecting a locked sink-only track from
   `:selected` would skew the capacity `:used` even though `track-rows` forces it
   visually on. The whole toggle stays in the pure layer (testable), the events layer
