@@ -2,13 +2,14 @@
   "Integration tests for the mtp:// backend (melt-jfs + native libmtp) — the one
   thing neither the jimfs unit tests nor a container can cover, since it needs a
   real device. Part of the `clojure -M:integration` suite; runs only when an MTP
-  device is attached, otherwise (CI, or no device) it skips.
+  device is attached, otherwise (CI, or no device) it skips — no env var or other
+  setup, like melt-jfs's own integration tests.
 
-  Read-only by default — discovery, storage listing, and capacity — so simply
-  attaching a phone and running the suite never writes to it or scans its whole
-  (potentially huge) library. A bounded copy -> catalog -> delete round-trip runs
-  only when DAPR_MTP_WRITE_URL points at a small writable directory on the device
-  (e.g. mtp://<vendor:product:serial>/<storage>/dapr-test/)."
+  Discovery, storage listing, and capacity are read-only. The copy -> catalog ->
+  delete round-trip does write to an attached device, but only inside a uniquely
+  named temp directory under its first storage, which it removes afterward — so a
+  run leaves the device as it was found and never scans its whole (potentially
+  huge) library."
   (:require [clojure.string :as str]
             [clojure.test :refer [deftest is testing]]
             [dapr.device.fs :as device-fs]
@@ -45,22 +46,37 @@
             "library-free! should report non-negative capacity for a storage")))))
 
 (deftest write-scan-roundtrip-test
-  (let [url (System/getenv "DAPR_MTP_WRITE_URL")]
-    (cond
-      (not devices)    (skip "no MTP device attached")
-      (str/blank? url) (skip "set DAPR_MTP_WRITE_URL (a writable device dir) to test write+scan")
-      :else
-      (testing "copy a file to the device, catalog! finds it, delete removes it"
-        (let [rel     "dapr-integration-test.mp3"
-              content "dapr-mtp-integration"
-              dir     (Files/createTempDirectory "mtp-it" (make-array FileAttribute 0))]
-          (spit (str (.resolve dir rel)) content)
-          (try
-            (nio/copy-file! (device-fs/root-path! (str (.toUri dir))) (device-fs/root-path! url) rel)
-            (let [track (first (filter #(= rel (:rel %)) (nio/catalog! [url])))]
-              (is (some? track) "copied track should be discovered by catalog!")
-              (is (= (count (.getBytes ^String content)) (:size track))))
-            (finally
-              (nio/delete-file! (device-fs/root-path! url) rel)))
-          (is (not (some #(= rel (:rel %)) (nio/catalog! [url])))
-              "track should be gone after delete-file!"))))))
+  (if-not devices
+    (skip "no MTP device attached")
+    ;; Auto-derive a writable location from the device's first storage — no env var.
+    ;; Everything is written under a uniquely named temp dir that is removed in the
+    ;; finally, so an attached device is left as it was found and catalog! only ever
+    ;; walks the small temp dir, never the whole device.
+    (let [storage (first (device-fs/dir-children! (:uri (first devices))))]
+      (if-not storage
+        (skip "device exposes no storage to write to")
+        (testing "copy a file into a temp dir on the device, catalog! finds it, delete removes it"
+          (let [content    "dapr-mtp-integration"
+                size       (count (.getBytes ^String content))
+                file-name  "dapr-integration-test.mp3"
+                test-dir   (str "dapr-it-" (System/currentTimeMillis))
+                rel        (str test-dir "/" file-name)
+                dst-root   (device-fs/root-path! (:uri storage))
+                test-url   (str (:uri storage) test-dir "/")
+                local      (Files/createTempDirectory "mtp-it" (make-array FileAttribute 0))
+                local-file (.resolve local ^String rel)]
+            (Files/createDirectories (.getParent local-file) (make-array FileAttribute 0))
+            (spit (str local-file) content)
+            (try
+              (nio/copy-file! (device-fs/root-path! (str (.toUri local))) dst-root rel)
+              (let [track (first (filter #(= file-name (:rel %)) (nio/catalog! [test-url])))]
+                (is (some? track) "copied track should be discovered by catalog!")
+                (is (= size (:size track)) "catalog should report the copied file's size"))
+              (nio/delete-file! dst-root rel)
+              (is (not (some #(= file-name (:rel %)) (nio/catalog! [test-url])))
+                  "track should be gone after delete-file!")
+              (finally
+                ;; Best-effort teardown even if an assertion above threw: remove the
+                ;; file and then the now-empty temp dir.
+                (nio/delete-file! dst-root rel)
+                (nio/delete-file! dst-root test-dir)))))))))
