@@ -20,6 +20,7 @@
    :sink-catalog   {}     ; key -> track
    :selected       #{}    ; set of selected track keys
    :filter         {:artist nil :album nil} ; iTunes-style column-browser filter (nil = All)
+   :filter-prev    nil    ; filter before the last facet click; restored on a double-click
    :filter-search  {:artist "" :album ""}   ; per-column search text narrowing the facet lists
    :free-bytes     0      ; usable bytes across the sink's distinct devices
    :capacity       {:used 0 :budget 0 :free 0}
@@ -125,6 +126,25 @@
   "Set the column-browser album filter (nil = All)."
   [state album]
   (assoc-in state [:filter :album] album))
+
+(defn apply-facet-filter
+  "Apply a column-browser facet click (single click) for column `col` (:artist or
+  :album), first stashing the filter it replaces so a following double-click can undo
+  it (see restore-filter). This is the single-click half of the click-count handling
+  that lets a double-click toggle a group without narrowing the view."
+  [state col value]
+  (let [state (assoc state :filter-prev (:filter state))]
+    (case col
+      :artist (set-filter-artist state value)
+      :album  (set-filter-album state value))))
+
+(defn restore-filter
+  "Undo the filter change that a double-click's first click applied, restoring the
+  filter stashed by apply-facet-filter — so a double-click toggles tracks without
+  leaving the view narrowed to the clicked facet. A no-op if nothing was stashed."
+  [state]
+  (cond-> state
+    (:filter-prev state) (assoc :filter (:filter-prev state))))
 
 (defn set-filter-search
   "Set the search text narrowing the facet list of column `col` (:artist/:album)."

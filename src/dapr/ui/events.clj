@@ -31,12 +31,6 @@
   [state-atom conn]
   (swap! state-atom state/set-libraries (cache/libraries (d/db conn))))
 
-(defn- filter-value
-  "Normalize a column-browser selection to a filter value: the list's 'All' entry
-  and a cleared selection (nil) both mean no constraint."
-  [v]
-  (when (and v (not= "All" v)) v))
-
 (defn- error-summary
   "A short one-line description of `t` for the status/error field — its message, or
   its class name when it has none (e.g. a StackOverflowError)."
@@ -322,23 +316,27 @@
   [pos]
   (some-> @state-atom* (swap! state/log-scrolled pos)))
 
-(defn- facet-toggle!
-  "Double-clicking a column-browser facet toggles selection of every track under it.
-  `col` is :artist or :album; the clicked value is the list's currently-selected item
-  (a single click already selected it and set the filter). Matching keys come from the
-  union catalog via fmt/filter-catalog — an album is scoped to the active artist filter
-  so same-named albums across artists don't collide. Ignores non-double clicks and the
-  \"All\" entry."
+(defn- facet-click!
+  "Handle a click on a column-browser facet list for column `col` (:artist/:album).
+  Filtering is driven from the click (not the selection model) so a double-click can
+  leave the view unnarrowed: a **single** click applies the clicked facet as the
+  filter, remembering the one it replaces; a **double** click restores that remembered
+  filter (undoing its own first click) and instead toggles selection of every track
+  under the facet. Matching keys come from the union catalog via fmt/filter-catalog —
+  an album is scoped to the active artist filter so same-named albums across artists
+  don't collide. The 'All' entry clears the filter but toggles nothing."
   [state-atom col ^MouseEvent ev]
-  (when (= 2 (.getClickCount ev))
-    (let [value (.getSelectedItem (.getSelectionModel ^ListView (.getSource ev)))]
-      (when (and (string? value) (not= "All" value))
-        (let [{:keys [source-catalog sink-catalog filter]} @state-atom
-              flt (case col
-                    :artist {:artist value :album nil}
-                    :album  {:artist (:artist filter) :album value})
-              ks  (keys (fmt/filter-catalog (merge sink-catalog source-catalog) flt))]
-          (swap! state-atom state/toggle-keys ks))))))
+  (let [item  (.getSelectedItem (.getSelectionModel ^ListView (.getSource ev)))
+        value (when (and (string? item) (not= "All" item)) item)]
+    (if (= 2 (.getClickCount ev))
+      (let [{:keys [source-catalog sink-catalog filter]} @state-atom
+            flt (case col
+                  :artist {:artist value :album nil}
+                  :album  {:artist (:artist filter) :album value})
+            ks  (when value (keys (fmt/filter-catalog (merge sink-catalog source-catalog) flt)))]
+        (swap! state-atom #(cond-> (state/restore-filter %)
+                             (seq ks) (state/toggle-keys ks))))
+      (swap! state-atom state/apply-facet-filter col value))))
 
 (defn make-handler
   "Return a cljfx event handler closing over `state-atom` and the `cache`
@@ -429,16 +427,12 @@
                           (future (reload-catalogs! state-atom cache)))
       ::toggle-track  (swap! state-atom state/toggle-track (:key event))
 
-      ;; column-browser filter — the list's "All" entry (and a cleared selection)
-      ;; both mean no constraint (nil).
-      ::filter-artist (swap! state-atom state/set-filter-artist (filter-value (:fx/event event)))
-      ::filter-album  (swap! state-atom state/set-filter-album (filter-value (:fx/event event)))
+      ;; column-browser facets — single click filters (see facet-click!), double
+      ;; click toggles every track under the facet without narrowing the view.
+      ::facet-click-artist   (facet-click! state-atom :artist (:fx/event event))
+      ::facet-click-album    (facet-click! state-atom :album (:fx/event event))
       ::filter-search-artist (swap! state-atom state/set-filter-search :artist (:fx/event event))
       ::filter-search-album  (swap! state-atom state/set-filter-search :album (:fx/event event))
-
-      ;; double-click a facet to toggle every track under that artist/album
-      ::facet-toggle-artist (facet-toggle! state-atom :artist (:fx/event event))
-      ::facet-toggle-album  (facet-toggle! state-atom :album (:fx/event event))
       ::refresh-availability (future (refresh-availability! state-atom cache))
       ::preview       (future (run-preview! state-atom))
       ::sync          (future (run-sync! state-atom cache))
