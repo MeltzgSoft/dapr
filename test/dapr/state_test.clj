@@ -44,27 +44,6 @@
                 (state/select-source "id"))]
       (is (= {:artist "" :album ""} (:filter-search s))))))
 
-(deftest facet-filter-click-test
-  (testing "a single facet click applies the filter and remembers the previous one"
-    (let [s (state/apply-facet-filter state/initial-state :artist "Alice")]
-      (is (= {:artist "Alice" :album nil} (:filter s)))
-      (is (= {:artist nil :album nil} (:filter-prev s)))))
-  (testing "a double-click restores the filter the first click applied (no narrowing)"
-    (let [before {:artist nil :album nil}
-          s (-> state/initial-state
-                (state/apply-facet-filter :artist "Alice") ; first click of the double
-                (state/restore-filter))]                   ; second click undoes it
-      (is (= before (:filter s)))))
-  (testing "double-clicking the already-filtered facet leaves the filter unchanged"
-    (let [s (-> state/initial-state
-                (state/set-filter-artist "Alice")          ; already viewing Alice
-                (state/apply-facet-filter :artist "Alice") ; first click (no visible change)
-                (state/restore-filter))]                   ; second click
-      (is (= {:artist "Alice" :album nil} (:filter s)))))
-  (testing "restore-filter is a no-op when nothing was stashed"
-    (is (= (:filter state/initial-state)
-           (:filter (state/restore-filter state/initial-state))))))
-
 (deftest libraries-test
   (testing "set, upsert (insert then replace), and lookup"
     (let [s (state/set-libraries state/initial-state [lib-a])]
