@@ -155,6 +155,35 @@
 
     :else state))
 
+(defn track-locked?
+  "True when track `k` is a sink-only track retained regardless of selection — on the
+  sink but not the source, under :keep / :add-to-source handling — so its checkbox is
+  locked on (see views/track-rows) and a group toggle must leave it untouched."
+  [{:keys [source-catalog sink-catalog settings]} k]
+  (and (contains? sink-catalog k)
+       (not (contains? source-catalog k))
+       (contains? #{:keep :add-to-source} (get settings :sink-only-handling :keep))))
+
+(defn toggle-keys
+  "Toggle a group of track keys `ks` as one unit (a double-click on a column-browser
+  artist/album facet). Locked sink-only tracks are ignored. If every remaining key is
+  already selected, deselect them all; otherwise select those that still fit the sink
+  budget (per-track, like toggle-track — over-budget keys are skipped). Capacity is
+  recomputed once."
+  [{:keys [selected source-catalog sink-catalog free-bytes] :as state} ks]
+  (let [togglable (remove #(track-locked? state %) ks)]
+    (if (empty? togglable)
+      state
+      (-> (if (every? #(contains? selected %) togglable)
+            (update state :selected #(reduce disj % togglable))
+            (reduce (fn [st k]
+                      (if (cap/would-fit? k (:selected st) source-catalog sink-catalog free-bytes)
+                        (update st :selected conj k)
+                        st))
+                    state
+                    togglable))
+          (recompute-capacity)))))
+
 ;; --- app settings ------------------------------------------------------------
 ;; The :settings map mirrors the persisted app config (dapr.cache); the event
 ;; handler persists alongside these pure transitions (see dapr.ui.events).

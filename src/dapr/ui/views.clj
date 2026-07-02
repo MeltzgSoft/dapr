@@ -236,8 +236,10 @@
   "One column of the iTunes-style browser: a header (with a count), a search field
   that narrows the list as you type, and a virtualized list whose first entry is
   'All'. Selecting an entry dispatches `select-event` ('All' is normalized to nil
-  in the handler); typing dispatches `search-event`."
-  [title values search-text search-event select-event]
+  in the handler); typing dispatches `search-event`; double-clicking an entry
+  dispatches `toggle-event`, which checks/unchecks every track under it (see
+  events/facet-toggle!)."
+  [title values search-text search-event select-event toggle-event]
   {:fx/type     :v-box
    :h-box/hgrow :always
    :spacing     2
@@ -252,7 +254,12 @@
                   ;; height, so dragging the divider gives the lists more room.
                   :v-box/vgrow :always
                   :items       (into ["All"] values)
-                  :on-selected-item-changed {:event/type select-event}}]})
+                  :tooltip     {:fx/type :tooltip
+                                :text "Double-click to check/uncheck all its tracks"}
+                  :on-selected-item-changed {:event/type select-event}
+                  ;; Single click selects (sets the filter); a double-click toggles
+                  ;; the whole group — facet-toggle! ignores non-double clicks.
+                  :on-mouse-clicked {:event/type toggle-event}}]})
 
 (defn- filter-browser
   "iTunes-style column browser: an Artist column and an Album column scoped to the
@@ -267,9 +274,11 @@
      ;; Floor so the browser can't be dragged shut entirely.
      :min-height 80
      :children   [(filter-column "Artist" artists (:artist filter-search)
-                                 ::events/filter-search-artist ::events/filter-artist)
+                                 ::events/filter-search-artist ::events/filter-artist
+                                 ::events/facet-toggle-artist)
                   (filter-column "Album" albums (:album filter-search)
-                                 ::events/filter-search-album ::events/filter-album)]}))
+                                 ::events/filter-search-album ::events/filter-album
+                                 ::events/facet-toggle-album)]}))
 
 (defn- track-table
   "The source-track picker as a virtualized TableView: JavaFX realizes only the
