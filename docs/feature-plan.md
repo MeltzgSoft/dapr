@@ -430,15 +430,53 @@ build must parameterize this per matrix leg. **Status:** not started
 
 ---
 
-## Suggested order
+## Suggested build order
 `feat/app-settings` → `feat/source-only-tracklist` (5) →
 `feat/library-availability` (7) → `feat/sink-only-tracks` (1) →
-`feat/theming` (6) → `feat/logging` (2) → `feat/shift-select` (8) →
+`feat/theming` (6) → `feat/logging` (2) → `feat/facet-toggle` (8) →
 `ci/release-uberjar` (9). Spikes (3, 4) run anytime in parallel.
 
 Rationale: front-load shared settings infra; 5→7→1 touch overlapping
 `track-rows`/`reload-catalogs!` code, so doing them in sequence avoids repeated
 merges.
+
+## Merge / rebase order (the open PR stack)
+
+The seven done features are **stacked PRs** — each targets its parent branch, so its
+diff shows only that feature. **Merge strictly bottom-up**; do not merge a child
+before its parent.
+
+| Order | PR | Branch | Base (parent) |
+|-------|-----|--------|---------------|
+| 1 | [#22](https://github.com/meltzg/dapr/pull/22) | `feat/app-settings` | `main` |
+| 2 | [#23](https://github.com/meltzg/dapr/pull/23) | `feat/source-only-tracklist` (5) | `main` |
+| 3 | [#24](https://github.com/meltzg/dapr/pull/24) | `feat/library-availability` (7) | `feat/source-only-tracklist` |
+| 4 | [#25](https://github.com/meltzg/dapr/pull/25) | `feat/sink-only-tracks` (1) | `feat/library-availability` |
+| 5 | [#26](https://github.com/meltzg/dapr/pull/26) | `feat/theming` (6) | `feat/sink-only-tracks` |
+| 6 | [#27](https://github.com/meltzg/dapr/pull/27) | `feat/logging` (2) | `feat/theming` |
+| 7 | [#28](https://github.com/meltzg/dapr/pull/28) | `feat/facet-toggle` (8) | `feat/logging` |
+
+Notes / gotchas:
+- **#22 and #23 are independent roots** off `main` (either can merge first). #22 must
+  land before #25, which merged the app-settings foundation into its history.
+- **#25's diff transiently includes #22's commit** (app-settings was merged into
+  `feat/sink-only-tracks`). It cleans up once #22 lands. If GitHub squash-merges #22,
+  rebase the stack from #24 up (see below) so the duplicated commit drops cleanly.
+- As each PR merges, GitHub **auto-retargets its child to the child's new base**
+  (usually `main`). If you use **squash or rebase merges** (not merge commits), the
+  child branch then shares no history with the squashed parent — **rebase the child
+  onto the updated base before merging it**:
+  ```
+  # after PR N merges to main (squash/rebase), for child branch B on parent P:
+  git fetch origin
+  git rebase --onto origin/main origin/P B   # replay B's own commits onto main
+  git push --force-with-lease origin B
+  ```
+  Repeat up the stack (#24 → #25 → #26 → #27 → #28). With plain **merge-commit**
+  merges this is usually unnecessary — the child already contains the parent.
+- Local `feat/sink-only-tracks` was 1 behind `origin` (origin has the completing
+  commit `7182a7b`, which *is* in the theming/logging stack). `git fetch && git
+  branch -f feat/sink-only-tracks origin/feat/sink-only-tracks` to sync the pointer.
 
 ## Per-branch checklist (apply to every feature)
 - [ ] Branch off latest `main` (rebase on `feat/app-settings` if it's a consumer).
