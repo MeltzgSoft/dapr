@@ -123,9 +123,10 @@
   (boolean (and source-id sink-id (not= source-id sink-id) (not (busy? status)))))
 
 (defn can-sync?
-  "True when a plan is ready with at least one add, move, or delete."
+  "True when a plan is ready with at least one add, move, delete, or copy-to-source."
   [{:keys [plan status]}]
   (boolean (and plan (= status :planned)
                 (pos? (+ (get-in plan [:summary :add] 0)
                          (get-in plan [:summary :move] 0)
-                         (get-in plan [:summary :delete] 0))))))
+                         (get-in plan [:summary :delete] 0)
+                         (get-in plan [:summary :add-to-source] 0))))))
