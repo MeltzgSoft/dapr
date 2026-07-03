@@ -94,4 +94,11 @@
   :clj-kondo
   {:extra-paths ["test" "test-integration"]
    :extra-deps  {clj-kondo/clj-kondo {:mvn/version "2026.05.25"}}
-   :main-opts   ["-m" "clj-kondo.main"]}}}
+   :main-opts   ["-m" "clj-kondo.main"]}
+
+  ;; Release build: `clojure -T:build uber` produces an AOT uberjar for
+  ;; dapr.main. build.clj rewrites the JavaFX classifier (pinned :linux above)
+  ;; to the target OS so each release-matrix leg bundles its own natives.
+  :build
+  {:deps      {io.github.clojure/tools.build {:mvn/version "0.10.9"}}
+   :ns-default build}}}

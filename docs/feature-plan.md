@@ -62,7 +62,9 @@ but **rescoped**: `feat/shift-select` (range-select) was built then removed at t
 user's request and replaced with `feat/facet-toggle` — double-click an artist/album
 facet to (de)select its tracks, with single-click filtering deferred so a double-click
 never flashes the view filtered (`b4729fe` + fixes through `8f7e216`, stacked on
-`feat/logging`). **Remaining:** `ci/release-uberjar` (9). Spikes (3, 4) anytime.
+`feat/logging`). Feature 9 ✅ **DONE** on `ci/release-uberjar`: `:build` alias +
+`build.clj` (per-OS AOT uberjar) and `release.yml` (v-tag matrix). **Remaining:**
+none. Spikes (3, 4) anytime.
 
 **Branch/commit state for continuing elsewhere:** on `feat/facet-toggle` at `8f7e216`
 (off `feat/logging` at `28d45e5`). Pull the branch, `clojure -M:test` should be green
@@ -81,7 +83,7 @@ the JavaFX interactions are only unit-tested at the state layer:
 `feat/logging` first, then `feat/facet-toggle`. `feat/facet-toggle` still carries
 feature 2's commits in its history.
 
-Next feature: `ci/release-uberjar` (9) — CI/build only, no GUI, fully verifiable here.
+Next feature: none — all 9 features complete. Spikes (3, 4) can run anytime.
 
 ---
 
@@ -414,19 +416,22 @@ album under `:keep` are left alone.
 ---
 
 ## 9. `ci/release-uberjar` — tagged release builds per-OS uberjars
-- [ ] **deps.edn:** add a `:build` alias (`io.github.clojure/tools.build`) +
-      `build.clj` with an `uber` fn (main = `dapr.main`, AOT main). Take the
-      **git tag as the version** (strip leading `v` from `v#.#.#`). Allow
-      selecting the JavaFX classifier per OS.
-- [ ] **`.github/workflows/release.yml`:** trigger on `push: tags: ['v*.*.*']`;
+- [x] **deps.edn:** added a `:build` alias (`io.github.clojure/tools.build`) +
+      `build.clj` with an `uber` fn (main = `dapr.main`, AOT main). Version comes
+      from `DAPR_VERSION`/git tag, stripping the leading `v` from `v#.#.#`. The
+      JavaFX classifier is auto-detected or passed via `:javafx-classifier`.
+- [x] **`.github/workflows/release.yml`:** triggers on `push: tags: ['v*.*.*']`;
       **matrix** over `{ubuntu-latest, macos-latest, windows-latest}` building the
-      OS-matching JavaFX-classifier uberjar.
-- [ ] Create the GitHub release and attach each OS jar
-      (`softprops/action-gh-release` or `gh release create`).
-- [ ] Document the `--enable-native-access=ALL-UNNAMED` runtime flag for the jar.
+      OS-matching JavaFX-classifier uberjar (linux / mac-aarch64 / win).
+- [x] Creates the GitHub release and attaches each OS jar
+      (`softprops/action-gh-release`; each matrix leg appends its jar).
+- [x] Documented the `--enable-native-access=ALL-UNNAMED` runtime flag (README);
+      the jar manifest also sets `Enable-Native-Access: ALL-UNNAMED`.
 
-**Notes:** JavaFX is per-OS classifier (deps.edn currently pins `:linux`); the
-build must parameterize this per matrix leg. **Status:** not started
+**Notes:** JavaFX is per-OS classifier (deps.edn pins `:linux` for local dev);
+`build.clj` rewrites it per target OS rather than parameterizing deps.edn, so
+`:run`/`:dev`/`:test` are untouched. **Status:** done — verified the linux jar
+builds, carries linux natives, and has the right Main-Class/manifest.
 
 ---
 

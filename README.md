@@ -94,7 +94,24 @@ clojure -M:integration
 # Lint and format
 clojure -M:clj-kondo --lint src dev test test-integration
 clojure -M:cljfmt check        # or: clojure -M:cljfmt fix
+
+# Build a release uberjar for the host OS (target/dapr-<version>-<classifier>.jar)
+clojure -T:build uber
 ```
+
+### Running a release jar
+
+Release uberjars are published per OS by the `Release` workflow on each
+`v#.#.#` tag (each jar carries its own platform's JavaFX natives). Run the jar
+for your OS with native access enabled:
+
+```bash
+java --enable-native-access=ALL-UNNAMED -jar dapr-<version>-<classifier>.jar
+```
+
+The jar's manifest sets `Enable-Native-Access: ALL-UNNAMED`, so JDKs that honour
+it run `java -jar dapr-....jar` without the flag; older JDKs still need it to
+reach the native MTP/keystore code.
 
 REPL-driven development (Integrant):
 

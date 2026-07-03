@@ -1,0 +1,124 @@
+name: Release
+
+# On a v#.#.# tag, run the unit + integration suites and — only if both pass —
+# build an AOT uberjar per OS (each carrying its own JavaFX natives, see
+# build.clj) and attach them all to a single GitHub release.
+
+on:
+  push:
+    tags: ['v*.*.*']
+
+permissions:
+  contents: write
+
+jobs:
+  # Gate the release on the unit suite: no jars are built or published unless
+  # tests pass.
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up JDK
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '25'
+
+      - name: Set up Clojure
+        uses: DeLaGuardo/setup-clojure@13.6.1
+        with:
+          cli: latest
+
+      - name: Cache dependencies
+        uses: actions/cache@v5
+        with:
+          path: |
+            ~/.m2/repository
+            ~/.gitlibs
+            .cpcache
+          key: cljdeps-${{ hashFiles('deps.edn') }}
+          restore-keys: cljdeps-
+
+      - name: Run tests
+        run: clojure -M:test
+
+  # Integration suite (SMB via Testcontainers/Docker; MTP skips without hardware).
+  integration:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up JDK
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '25'
+
+      - name: Set up Clojure
+        uses: DeLaGuardo/setup-clojure@13.6.1
+        with:
+          cli: latest
+
+      - name: Cache dependencies
+        uses: actions/cache@v5
+        with:
+          path: |
+            ~/.m2/repository
+            ~/.gitlibs
+            .cpcache
+          key: cljdeps-${{ hashFiles('deps.edn') }}
+          restore-keys: cljdeps-
+
+      - name: Run integration tests
+        run: clojure -M:integration
+
+  build:
+    needs: [test, integration]
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            classifier: linux
+          - os: macos-latest
+            classifier: mac-aarch64
+          - os: windows-latest
+            classifier: win
+    runs-on: ${{ matrix.os }}
+    env:
+      DAPR_VERSION: ${{ github.ref_name }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up JDK
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '25'
+
+      - name: Set up Clojure
+        uses: DeLaGuardo/setup-clojure@13.6.1
+        with:
+          cli: latest
+
+      - name: Cache dependencies
+        uses: actions/cache@v5
+        with:
+          path: |
+            ~/.m2/repository
+            ~/.gitlibs
+            .cpcache
+          key: cljdeps-${{ hashFiles('deps.edn') }}
+          restore-keys: cljdeps-
+
+      - name: Build uberjar
+        run: clojure -T:build uber :javafx-classifier ${{ matrix.classifier }}
+
+      - name: Attach jar to release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: target/dapr-*.jar
