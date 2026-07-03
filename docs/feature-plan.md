@@ -83,7 +83,9 @@ the JavaFX interactions are only unit-tested at the state layer:
 `feat/logging` first, then `feat/facet-toggle`. `feat/facet-toggle` still carries
 feature 2's commits in its history.
 
-Next feature: none — all 9 features complete. Spikes (3, 4) can run anytime.
+Next feature: none — all 9 features complete. Spike 4 (MTP tags) ✅ **DONE** on
+`spike/mtp-tags` + melt-jfs `feat/track-metadata` (see `docs/mtp-tags.md`).
+Spike 3 (SMB tags) can run anytime.
 
 ---
 
@@ -289,12 +291,25 @@ tags via `device.tag`.
 ## 4. `spike/mtp-tags` — investigate MTP tag reading *(research)*
 Deliverable: `docs/mtp-tags.md`. MTP exposes metadata natively (object properties:
 Artist / AlbumName / Name) — potentially cheap vs. reading file bytes.
-- [ ] Check whether **melt-jfs** already surfaces MTP object properties; **we own
-      that source**, so propose lib changes to expose them if not.
-- [ ] If available, a `device.tag/tags!` method for mtp:// reads tags from device
-      metadata directly (no byte read). Shared seam with #3 (`device.tag`).
+- [x] Check whether **melt-jfs** already surfaces MTP object properties; **we own
+      that source**, so propose lib changes to expose them if not. → It did NOT
+      (0.1.1: filesystem facts only). Implemented on melt-jfs
+      **`feat/track-metadata`** (`42f7fb5`, stacked on
+      `test/integration-io-coverage`): `MtpBackend.getTrackMetadata` for both
+      libmtp (FFM `LIBMTP_Get_Trackmetadata`) and WPD backends, surfaced as a
+      new NIO **"mtp" attribute view** (`Files.readAttributes(path,
+      "mtp:title,artist,album")`) — so the dapr side stays pure java.nio.
+- [x] `device.tag/tags!` method for mtp:// reads tags from device metadata
+      directly (no byte read) — `dapr.device.mtp.tag` on `spike/mtp-tags`,
+      merged per-field over path fallbacks, `:source :embedded`. Safe with
+      melt-jfs 0.1.1 on the classpath (no "mtp" view → catches
+      UnsupportedOperationException → path tags), lights up on the deps bump.
 
-**Status:** not started
+**Status:** ✅ **DONE** on `spike/mtp-tags` — see `docs/mtp-tags.md` for cost
+analysis (metadata-only ≈ 100× cheaper than whole-object reads), caveats
+(device indexing, FILETYPE_UNKNOWN uploads, tag-cache migration for existing
+`:source :path` entries), and follow-ups (hardware verification, melt-jfs
+release + deps bump).
 
 ---
 

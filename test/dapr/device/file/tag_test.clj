@@ -6,13 +6,11 @@
            (java.nio.file.attribute FileAttribute)))
 
 (deftest default-dispatch-test
-  (testing "smb:// and mtp:// roots fall back to path-derived tags, tagged :path"
+  (testing "schemes without a registered reader (smb://) fall back to path-derived
+            tags, tagged :path (mtp:// now has its own reader — see
+            dapr.device.mtp.tag-test)"
     (is (= {:artist "Artist" :album "Album" :title "Title" :source :path}
            (tag/tags! {:root "smb://host/share/Artist/Album/Title.mp3"
-                       :rel  "Artist/Album/Title.mp3"}
-                      nil)))
-    (is (= {:artist "Artist" :album "Album" :title "Title" :source :path}
-           (tag/tags! {:root "mtp://dev/Artist/Album/Title.mp3"
                        :rel  "Artist/Album/Title.mp3"}
                       nil)))))
 
