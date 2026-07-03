@@ -53,8 +53,9 @@ incremental cache (only never-seen tracks are read) and partial scans better.
 ## melt-jfs changes (implemented)
 
 melt-jfs 0.1.1 exposes only filesystem facts (`MTPItemInfo`, `basic` attribute
-view). Branch **`feat/track-metadata`** (commit `42f7fb5`, stacked on
-`test/integration-io-coverage`) adds:
+view). Branch **`feat/track-metadata`**
+([PR #9](https://github.com/MeltzgSoft/melt-jfs/pull/9), commit `0c1d9bd`,
+onto `master`) adds:
 
 - `MTPTrackMetadata` record: title/artist/album/genre (null when unreported),
   trackNumber/durationMillis (0 when unreported).
@@ -138,8 +139,8 @@ reported anything, else `:path`.
 
 1. Verify on hardware: melt-jfs `./gradlew integrationTest` + the dapr smoke
    above; record the measured per-track cost here.
-2. Merge melt-jfs `feat/track-metadata` (PR onto its integration-test branch
-   stack), tag a release (0.1.2 or 0.2.0), bump dapr's `deps.edn`.
+2. Merge melt-jfs [PR #9](https://github.com/MeltzgSoft/melt-jfs/pull/9),
+   tag a release (0.1.2 or 0.2.0), bump dapr's `deps.edn`.
 3. Promote this spike's prototype to the real feature: the deps bump plus the
    cache-migration decision above.
 4. melt-jfs follow-up: `sendFile` filetype inference (fixes the

@@ -294,8 +294,9 @@ Artist / AlbumName / Name) — potentially cheap vs. reading file bytes.
 - [x] Check whether **melt-jfs** already surfaces MTP object properties; **we own
       that source**, so propose lib changes to expose them if not. → It did NOT
       (0.1.1: filesystem facts only). Implemented on melt-jfs
-      **`feat/track-metadata`** (`42f7fb5`, stacked on
-      `test/integration-io-coverage`): `MtpBackend.getTrackMetadata` for both
+      **`feat/track-metadata`**
+      ([PR #9](https://github.com/MeltzgSoft/melt-jfs/pull/9), `0c1d9bd`,
+      onto `master`): `MtpBackend.getTrackMetadata` for both
       libmtp (FFM `LIBMTP_Get_Trackmetadata`) and WPD backends, surfaced as a
       new NIO **"mtp" attribute view** (`Files.readAttributes(path,
       "mtp:title,artist,album")`) — so the dapr side stays pure java.nio.
