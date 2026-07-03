@@ -116,7 +116,17 @@ jobs:
           key: cljdeps-${{ hashFiles('deps.edn') }}
           restore-keys: cljdeps-
 
+      # AOT loads JavaFX classes whose static initializers boot the toolkit; on
+      # headless Linux (GTK) that needs an X display, so run under a virtual
+      # framebuffer. macOS/Windows initialize the toolkit headlessly.
+      - name: Build uberjar (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update && sudo apt-get install -y xvfb
+          xvfb-run -a clojure -T:build uber :javafx-classifier ${{ matrix.classifier }}
+
       - name: Build uberjar
+        if: runner.os != 'Linux'
         run: clojure -T:build uber :javafx-classifier ${{ matrix.classifier }}
 
       - name: Attach jar to release
