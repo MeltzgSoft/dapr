@@ -4,9 +4,10 @@
 devices index their media and expose per-object Artist / AlbumName / Name (and
 Genre / Track / Duration) properties, so tags cost a few small USB
 transactions per track instead of a whole-object transfer. melt-jfs did **not**
-surface these; since we own it, the lib change is implemented (see below), and
-this branch carries the dapr-side reader, wired so it degrades gracefully
-until the new melt-jfs release is picked up.
+surface these; since we own it, the lib change is implemented (see below),
+shipped in **melt-jfs 0.1.2**, and this branch carries the dapr-side reader
+(`deps.edn` bumped to 0.1.2). The reader still degrades gracefully on older
+melt-jfs, which throws `UnsupportedOperationException` for the unknown view.
 
 ## Problem
 
@@ -125,22 +126,16 @@ reported anything, else `:path`.
   (`trackMetadataReadsForAudioFileWithoutTransferringContent` prints the
   timing this doc estimates).
 - dapr: unit tests cover the merge logic and the no-view fallback; lint +
-  cljfmt clean. End-to-end (real tags in the track table) needs the local
-  melt-jfs jar and a device:
-
-  ```sh
-  (cd ../melt-jfs && ./gradlew jar)   # → build/libs/melt-jfs-0.0.0-SNAPSHOT.jar
-  clojure -Sdeps '{:deps {io.github.meltzg/melt-jfs
-                          {:local/root "../melt-jfs/build/libs/melt-jfs-0.0.0-SNAPSHOT.jar"}}}' \
-          -M:run
-  ```
+  cljfmt clean. With 0.1.2 on the classpath, end-to-end (real tags in the
+  track table) just needs a device — `clojure -M:run` and scan an mtp:// root.
 
 ## Follow-ups
 
 1. Verify on hardware: melt-jfs `./gradlew integrationTest` + the dapr smoke
    above; record the measured per-track cost here.
-2. Merge melt-jfs [PR #9](https://github.com/MeltzgSoft/melt-jfs/pull/9),
-   tag a release (0.1.2 or 0.2.0), bump dapr's `deps.edn`.
+2. ~~Merge melt-jfs [PR #9](https://github.com/MeltzgSoft/melt-jfs/pull/9),
+   tag a release, bump dapr's `deps.edn`.~~ **Done** — released as melt-jfs
+   0.1.2 (Maven Central); `deps.edn` bumped 0.1.1 → 0.1.2.
 3. Promote this spike's prototype to the real feature: the deps bump plus the
    cache-migration decision above.
 4. melt-jfs follow-up: `sendFile` filetype inference (fixes the
