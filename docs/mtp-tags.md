@@ -108,15 +108,17 @@ reported anything, else `:path`.
 - **Title comes from PTP `Name` (0xDC44)**; a few devices return the display
   name rather than the tag title. Title is also the least valuable field
   (path-derived title ≈ filename), so per-field preference handles it.
-- **Cache migration**: existing MTP tracks are cached with `:source :path` and
-  an unchanged mtime, and `dapr.fs.nio/track-tags!` only re-reads entries
-  without a recorded source — so **existing libraries keep path tags after the
-  reader lands**. Options for the follow-up feature:
-  (a) one-off migration that clears `:track/tag-source` for mtp-rooted tracks
-  (recommended — one retract, next scan re-reads);
-  (b) re-read any `:path`-sourced mtp track each scan (re-pays 1–2
-  transactions per genuinely tagless file, every scan);
-  (c) do nothing — entries upgrade only when a file's mtime changes.
+- **Cache migration** *(done — option a)*: existing MTP tracks were cached with
+  `:source :path` and an unchanged mtime, and `dapr.fs.nio/track-tags!` only
+  re-reads entries without a recorded source, so they would have kept path tags
+  after the reader landed. `dapr.cache/migrate-mtp-tag-sources!` (run once at
+  startup from the `:dapr/cache` init, gated by an app-setting flag) retracts
+  `:track/tag-source` from every `:path`-sourced track under an `mtp://` root, so
+  the next scan re-reads it through the device index. Gating matters: an ungated
+  re-run would re-clear genuinely tagless files (device reported nothing) every
+  launch, re-paying the device read each time — the rejected option (b). Option
+  (c), do nothing, would have left existing libraries on path tags until an
+  mtime change.
 
 ## Verification status
 
@@ -136,8 +138,9 @@ reported anything, else `:path`.
 2. ~~Merge melt-jfs [PR #9](https://github.com/MeltzgSoft/melt-jfs/pull/9),
    tag a release, bump dapr's `deps.edn`.~~ **Done** — released as melt-jfs
    0.1.2 (Maven Central); `deps.edn` bumped 0.1.1 → 0.1.2.
-3. Promote this spike's prototype to the real feature: the deps bump plus the
-   cache-migration decision above.
+3. ~~Promote this spike's prototype to the real feature: the deps bump plus the
+   cache-migration decision above.~~ **Done** — deps bumped to 0.1.2 and the
+   one-off `migrate-mtp-tag-sources!` migration (option a) shipped.
 4. melt-jfs follow-up: `sendFile` filetype inference (fixes the
    `FILETYPE_UNKNOWN` caveat at the source).
 5. Optional someday: the view already surfaces genre/trackNumber/
