@@ -165,7 +165,8 @@
         handling (get settings :sink-only-handling :keep)
         locked?  (contains? #{:keep :add-to-source} handling)]
     (->> (vals (fmt/filter-catalog (merge sink-catalog source-catalog) filter))
-         (sort-by (juxt :artist :album :title :rel))
+         (sort-by (juxt (comp fmt/sort-key :artist) (comp fmt/sort-key :album)
+                        (comp fmt/sort-key :title) :rel))
          (mapv (fn [t]
                  (let [k          (:key t)
                        in-source? (contains? source-catalog k)
@@ -214,14 +215,14 @@
   (`:cell-value-factory identity`) so a cell can colour itself by the row while the
   column still sorts by its own `field`. `field` selects the displayed value and
   `render` formats it to a string (nil → blank); the `:comparator` orders rows by
-  `field` (clojure.core/compare handles nil and numbers). Sink-only rows
+  `field` case-insensitively (see fmt/compare-field). Sink-only rows
   (`:in-source? false`) render red."
   [text field width render]
   {:fx/type            :table-column
    :text               text
    :pref-width         width
    :cell-value-factory identity
-   :comparator         (fn [a b] (compare (field a) (field b)))
+   :comparator         (fn [a b] (fmt/compare-field (field a) (field b)))
    :cell-factory       {:fx/cell-type :table-cell
                         ;; A recycled cell can transiently describe a nil row; the
                         ;; blank {} description keeps it from rendering garbage.
