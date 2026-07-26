@@ -2,6 +2,21 @@
   (:require [clojure.test :refer [deftest is testing]]
             [dapr.ui.format :as fmt]))
 
+(deftest compare-field-test
+  (testing "strings sort case-insensitively"
+    (is (neg? (fmt/compare-field "apple" "Banana")))
+    (is (pos? (fmt/compare-field "Banana" "apple")))
+    (is (= ["apple" "Banana" "cherry"]
+           (sort fmt/compare-field ["Banana" "cherry" "apple"]))))
+  (testing "case-only differences order deterministically (lower- vs upper-case)"
+    (is (not (zero? (fmt/compare-field "abc" "ABC"))))
+    (is (= (fmt/compare-field "abc" "ABC")
+           (- (fmt/compare-field "ABC" "abc")))))
+  (testing "numbers keep numeric order and nil sorts first"
+    (is (neg? (fmt/compare-field 2 10)))
+    (is (neg? (fmt/compare-field nil "a")))
+    (is (zero? (fmt/compare-field nil nil)))))
+
 (deftest human-bytes-test
   (testing "scales by unit"
     (is (= "0 B" (fmt/human-bytes 0)))

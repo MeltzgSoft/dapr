@@ -52,6 +52,22 @@
   [xs]
   (->> xs (remove nil?) distinct sort vec))
 
+(defn sort-key
+  "Case-insensitive sort key for a track field: strings are lowercased so sorting
+  ignores case; non-strings (numbers) and nil pass through unchanged (nil sorts
+  first). Used both for the table's default row order and its per-column sort."
+  [v]
+  (cond-> v (string? v) str/lower-case))
+
+(defn compare-field
+  "Comparator for a track-table column, so clicking a header sorts case-insensitively.
+  Orders by sort-key (case-insensitive for strings, clojure.core/compare's handling
+  of numbers and nil otherwise), with a case-sensitive tiebreak so values equal but
+  for case still order deterministically rather than arbitrarily."
+  [a b]
+  (let [c (compare (sort-key a) (sort-key b))]
+    (if (and (zero? c) (string? a) (string? b)) (compare a b) c)))
+
 (defn artists
   "Sorted distinct artists present in `catalog` (a key->track map). Tracks with no
   artist tag are omitted (they remain visible under the 'All' filter)."
