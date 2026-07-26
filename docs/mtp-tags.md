@@ -1,13 +1,21 @@
 # Spike 4: MTP tag reading via device metadata
 
-**Verdict: yes — read tags from MTP object properties, not file bytes.** MTP
-devices index their media and expose per-object Artist / AlbumName / Name (and
-Genre / Track / Duration) properties, so tags cost a few small USB
-transactions per track instead of a whole-object transfer. melt-jfs did **not**
-surface these; since we own it, the lib change is implemented (see below),
-shipped in **melt-jfs 0.1.2**, and this branch carries the dapr-side reader
-(`deps.edn` bumped to 0.1.2). The reader still degrades gracefully on older
-melt-jfs, which throws `UnsupportedOperationException` for the unknown view.
+**Verdict: yes — read tags without pulling file bytes.** Two metadata-only
+routes exist, both far cheaper than a whole-object transfer:
+
+- the device's **media index** (per-object Artist / AlbumName / Name), and
+- the file's **own embedded tags**, read from a few KB of header over MTP
+  **ranged reads** (`GetPartialObject`).
+
+melt-jfs surfaced neither at spike time; since we own it, both landed as NIO
+attribute views. **melt-jfs 0.2.0** ships the `"audio"` view (embedded tags via
+ranged reads) alongside the earlier `"mtp"` view (device index), and this branch
+consumes both: `deps.edn` is on 0.2.0, and the dapr reader layers **audio over
+mtp over path** per field. Prefer the `audio` view — it recovers the real
+embedded tags even when the device's index is stale, unpopulated, or reports the
+filename as the title. The reader degrades gracefully when a view is absent (an
+older melt-jfs throws `UnsupportedOperationException`), falling through to the
+next layer.
 
 ## Problem
 
@@ -77,37 +85,49 @@ onto `master`) adds:
 Unit-tested against the fake backend (10 tests); device-gated integration
 tests assert the view's shape and print a timing for the metadata read.
 
-## dapr wiring (prototype on this branch)
+## dapr wiring (on this branch)
 
-`dapr.device.mtp.tag` registers `tag/tags! :mtp`: read
-`"mtp:title,artist,album"`, merge over path-derived fallbacks per field
-(`merge-device-tags`, pure + unit-tested), `:source :embedded` when the device
-reported anything, else `:path`.
+`dapr.device.mtp.tag` registers `tag/tags! :mtp`, layering three sources per
+field with `merge-device-tags` (pure + unit-tested): path-derived fallback,
+then the `"mtp"` view over it, then the `"audio"` view over that. So for each of
+title/artist/album the best available value wins — embedded tags first, the
+device index next, the path last.
 
-- **`:source :embedded`, not a new `:device` value**: the device's media index
-  *is* the files' embedded tags as it last scanned them, and reusing
-  `:embedded` keeps `dapr.cache`'s better-tags preference (`:embedded` beats
-  `:path`) working unchanged.
-- **Graceful on melt-jfs 0.1.1**: the default provider (and 0.1.1's MTP
-  provider) throws `UnsupportedOperationException` for the unknown view; the
-  method catches Throwable and falls back to path tags — so this branch is
-  safe to merge before the melt-jfs release, and lights up when `deps.edn`
-  bumps to the release carrying the view.
+- **`audio` preferred over `mtp`**: the `audio` view parses the file's own tags,
+  so it is correct even when the device's index is stale, unpopulated, or
+  filename-derived; `mtp` fills fields the embedded reader can't (an unsupported
+  container, a corrupt header).
+- **`:source :embedded`, not a new `:device` value**: either view reflects the
+  files' embedded tags, so reusing `:embedded` keeps `dapr.cache`'s better-tags
+  preference (`:embedded` beats `:path`) working unchanged. The layered merge
+  keeps `:embedded` sticky — once any layer reports, a blank outer layer can't
+  demote it back to `:path`.
+- **Graceful when a view is absent**: an older melt-jfs (or the default
+  provider) throws `UnsupportedOperationException` for an unknown view; each
+  view read catches Throwable and yields `{}`, so the reader falls through to
+  the next layer and, if all are blank, to path tags.
 
 ## Caveats
 
-- **The device must have indexed the file.** Android does this automatically;
-  dumb devices may report nothing. Every miss degrades to today's behavior
-  (path-derived tags), never worse.
-- **Files uploaded as `FILETYPE_UNKNOWN` report no metadata** (libmtp's track
-  gate filters on object format, and melt-jfs `sendFile` currently sends
-  everything as unknown). Low impact for dapr — tracks it copies to the device
-  hit the tag cache under the same `[rel size]` — but the real fix is a
-  melt-jfs follow-up: infer the LIBMTP filetype / WPD object format from the
-  filename extension in `sendFile`.
-- **Title comes from PTP `Name` (0xDC44)**; a few devices return the display
-  name rather than the tag title. Title is also the least valuable field
-  (path-derived title ≈ filename), so per-field preference handles it.
+These applied to the `mtp` (device-index) view; the `audio` view now leads and
+resolves the first three, with `mtp` and path still behind it:
+
+- **The device must have indexed the file** *(mitigated)*. The `mtp` view is
+  blank until the device's media scanner runs; the `audio` view reads the file's
+  own header instead, so freshly-uploaded and unindexed tracks tag immediately.
+  A `mtp`-only miss degrades to path tags, never worse.
+- **Files uploaded as `FILETYPE_UNKNOWN` report no `mtp` metadata** *(mitigated)*
+  (libmtp's track gate filters on object format, and melt-jfs `sendFile` sends
+  everything as unknown). The `audio` view is format-agnostic — it parses the
+  bytes regardless. The source-level fix remains a melt-jfs follow-up: infer the
+  filetype / WPD object format from the filename extension in `sendFile`.
+- **`mtp` title comes from PTP `Name` (0xDC44)**; a few devices return the
+  display name rather than the tag title *(mitigated)* — the `audio` view reads
+  the real embedded title, and title is the least valuable field anyway
+  (path-derived title ≈ filename).
+- **`audio` supports FLAC, MP3, MP4/M4A, Ogg Vorbis, Opus, WAV.** Any other
+  container falls through to the `mtp` index, then path — never worse than the
+  device-index-only approach.
 - **Cache migration** *(done — option a)*: existing MTP tracks were cached with
   `:source :path` and an unchanged mtime, and `dapr.fs.nio/track-tags!` only
   re-reads entries without a recorded source, so they would have kept path tags
@@ -127,20 +147,25 @@ reported anything, else `:path`.
   one in and run `./gradlew integrationTest`
   (`trackMetadataReadsForAudioFileWithoutTransferringContent` prints the
   timing this doc estimates).
-- dapr: unit tests cover the merge logic and the no-view fallback; lint +
-  cljfmt clean. With 0.1.2 on the classpath, end-to-end (real tags in the
-  track table) just needs a device — `clojure -M:run` and scan an mtp:// root.
+- dapr: unit tests cover the layered merge (audio over mtp over path, sticky
+  `:embedded`) and the no-view fallback; lint + cljfmt clean. With 0.2.0 on the
+  classpath, end-to-end (real tags in the track table) just needs a device —
+  `clojure -M:run` and scan an mtp:// root.
 
 ## Follow-ups
 
 1. Verify on hardware: melt-jfs `./gradlew integrationTest` + the dapr smoke
-   above; record the measured per-track cost here.
+   above; record the measured per-track cost here — now covering both the
+   `audio` (ranged header read, ~KB) and `mtp` (index) paths.
 2. ~~Merge melt-jfs [PR #9](https://github.com/MeltzgSoft/melt-jfs/pull/9),
    tag a release, bump dapr's `deps.edn`.~~ **Done** — released as melt-jfs
    0.1.2 (Maven Central); `deps.edn` bumped 0.1.1 → 0.1.2.
 3. ~~Promote this spike's prototype to the real feature: the deps bump plus the
    cache-migration decision above.~~ **Done** — deps bumped to 0.1.2 and the
    one-off `migrate-mtp-tag-sources!` migration (option a) shipped.
+3b. ~~Adopt melt-jfs 0.2.0's `audio` view (embedded tags via ranged reads) as the
+   preferred source, falling back to the `mtp` index then path.~~ **Done** —
+   `deps.edn` on 0.2.0; `tag/tags! :mtp` layers audio over mtp over path.
 4. melt-jfs follow-up: `sendFile` filetype inference (fixes the
    `FILETYPE_UNKNOWN` caveat at the source).
 5. Optional someday: the view already surfaces genre/trackNumber/

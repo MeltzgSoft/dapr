@@ -22,11 +22,25 @@
     (is (= fallback
            (mtp-tag/merge-device-tags fallback
                                       {"artist" nil "album" nil "title" nil})))
-    (is (= fallback (mtp-tag/merge-device-tags fallback {})))))
+    (is (= fallback (mtp-tag/merge-device-tags fallback {}))))
+  (testing "layering audio over mtp: an :embedded fallback stays :embedded even
+            when the outer layer reports nothing"
+    (let [mtp-layer (mtp-tag/merge-device-tags fallback
+                                               {"artist" "M" "album" "" "title" ""})]
+      (is (= {:artist "M" :album "PathAlbum" :title "PathTitle" :source :embedded}
+             mtp-layer))
+      (is (= {:artist "M" :album "PathAlbum" :title "PathTitle" :source :embedded}
+             (mtp-tag/merge-device-tags mtp-layer {})))))
+  (testing "layering audio over mtp: audio fields win per field, mtp fills the gaps"
+    (let [mtp-layer (mtp-tag/merge-device-tags fallback
+                                               {"artist" "M-artist" "album" "M-album" "title" ""})]
+      (is (= {:artist "A-artist" :album "M-album" :title "A-title" :source :embedded}
+             (mtp-tag/merge-device-tags mtp-layer
+                                        {"artist" "A-artist" "album" "" "title" "A-title"}))))))
 
-(deftest mtp-view-unavailable-falls-back-test
-  (testing "when the path's provider has no \"mtp\" attribute view (melt-jfs 0.1.1
-            on the classpath, here the default filesystem) the read falls back to
+(deftest views-unavailable-falls-back-test
+  (testing "when the path's provider has neither the \"audio\" nor the \"mtp\"
+            attribute view (here the default filesystem) the read falls back to
             path-derived tags instead of throwing"
     (let [^Path p (Files/createTempFile "dapr-mtp-tag" ".mp3"
                                         (make-array FileAttribute 0))]
