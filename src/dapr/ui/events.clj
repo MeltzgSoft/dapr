@@ -1,11 +1,11 @@
 (ns dapr.ui.events
   "Side-effecting event handlers for the cljfx UI. Pure state transitions live in
   dapr.state; filesystem work lives in dapr.fs.nio / dapr.sync; library and scan
-  persistence in dapr.cache. Each handler runs on the JavaFX Application Thread,
+  persistence in dapr.db.cache. Each handler runs on the JavaFX Application Thread,
   so long-running scans/copies are dispatched to background threads to keep the
   UI responsive."
   (:require [clojure.java.io :as io]
-            [dapr.cache :as cache]
+            [dapr.db.cache :as cache]
             [dapr.device.events :as device-events]
             [dapr.device.file.events]
             [dapr.device.format :as device]

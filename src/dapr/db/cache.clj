@@ -1,4 +1,4 @@
-(ns dapr.cache
+(ns dapr.db.cache
   "Persisted scan cache and system of record for libraries, backed by an
   in-memory DataScript database snapshotted to an EDN file. The DB owns library
   identity and references: a *library* entity holds its name and roots; a *track*
@@ -64,7 +64,7 @@
       dst
       (catch Exception e
         (binding [*out* *err*]
-          (println "dapr.cache: could not back up corrupt snapshot" (str f) "—" (.getMessage e)))
+          (println "dapr.db.cache: could not back up corrupt snapshot" (str f) "—" (.getMessage e)))
         nil))))
 
 (defn load!

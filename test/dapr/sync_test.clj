@@ -3,7 +3,7 @@
   these tests exercise the cache wiring without touching the filesystem; the real
   filesystem walk is covered by dapr.fs.nio-test and the integration suite."
   (:require [clojure.test :refer [deftest is testing]]
-            [dapr.cache :as cache]
+            [dapr.db.cache :as cache]
             [dapr.fs.nio :as nio]
             [dapr.sync :as sync]
             [datascript.core :as d]))

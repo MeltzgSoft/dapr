@@ -1,6 +1,6 @@
-(ns dapr.cache-test
+(ns dapr.db.cache-test
   (:require [clojure.test :refer [deftest is testing]]
-            [dapr.cache :as cache]
+            [dapr.db.cache :as cache]
             [datascript.core :as d])
   (:import (java.nio.file Files)
            (java.nio.file.attribute FileAttribute)))

@@ -27,7 +27,7 @@
    :settings-open? false  ; whether the library-management modal is showing
    :editor         nil    ; library being added/edited, or nil
    :browser        nil    ; folder browser, or nil
-   :settings       {}     ; persisted app settings (theme, log dir, …); see dapr.cache
+   :settings       {}     ; persisted app settings (theme, log dir, …); see dapr.db.cache
    :os-color-scheme nil   ; OS-reported scheme (:dark/:light); drives the :system theme
    :status         :idle  ; :idle :scanning :planned :syncing :done :error
    :scan-gen       0      ; bumped per scan; lets a new scan supersede a running one
@@ -185,7 +185,7 @@
           (recompute-capacity)))))
 
 ;; --- app settings ------------------------------------------------------------
-;; The :settings map mirrors the persisted app config (dapr.cache); the event
+;; The :settings map mirrors the persisted app config (dapr.db.cache); the event
 ;; handler persists alongside these pure transitions (see dapr.ui.events).
 
 (defn set-settings
