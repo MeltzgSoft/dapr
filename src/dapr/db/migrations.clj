@@ -22,14 +22,46 @@
   recorded only after its `:migrate` fn returns, so one that throws is left unrecorded
   and retried next startup — migrations should therefore be written to be safely
   re-runnable."
-  (:require [datascript.core :as d]))
+  (:require [dapr.db.cache :as cache]
+            [dapr.device.format :as device]
+            [datascript.core :as d]))
+
+;; --- migrations (registered below; run in registry order) --------------------
+
+(defn migrate-mtp-tag-sources!
+  "The :migration/mtp-tag-sources migration. For the arrival of the mtp:// tag reader
+  (dapr.device.mtp.tag): retract :track/tag-source from every track cached
+  path-derived (:source :path) that has a presence under an mtp:// root, so the next
+  scan re-reads it through the device reader instead of reusing its stale path tags.
+  MTP tracks scanned before the reader landed were cached :source :path with an
+  unchanged mtime, and dapr.fs.nio/track-tags! reuses any entry that has a recorded
+  source — so without this they'd keep path-derived tags until their mtime changed.
+
+  Run exactly once via the applied-id gate (`run-migrations!`), so it can't re-clear
+  the source of genuinely tagless mtp files (a device whose media scanner reported
+  nothing, left at :path by the re-read) and force a wasted device read every startup.
+  Returns the number of tracks cleared (may be 0). Retract-only, no I/O."
+  [conn]
+  (let [eids (->> (d/q '[:find ?t ?root
+                         :where
+                         [?t :track/tag-source :path]
+                         [?p :presence/track ?t]
+                         [?p :presence/root ?root]]
+                       (d/db conn))
+                  (into #{} (comp (filter (fn [[_ root]] (= :mtp (device/device-type root))))
+                                  (map first))))]
+    (when (seq eids)
+      (d/transact! conn (mapv (fn [t] [:db/retract t :track/tag-source :path]) eids)))
+    (count eids)))
 
 (def registry
   "Ordered migrations, each {:migration/id <keyword> :migration/migrate <fn of conn>}.
   Ids must be distinct keywords, conventionally namespaced (e.g.
   `:migration/mtp-tag-sources`); `run-migrations!` applies, in vector order, any whose
-  id is not yet recorded. Empty until a migration is registered."
-  [])
+  id is not yet recorded."
+  [{:migration/id :migration/mtp-tag-sources :migration/migrate migrate-mtp-tag-sources!}])
+
+;; --- framework: applied-id ledger + runner -----------------------------------
 
 (defn- valid-registry?
   "True when every migration has a keyword :migration/id and the ids are distinct."
@@ -79,3 +111,22 @@
        (migrate conn)
        (record-applied! conn id))
      (mapv :migration/id pending))))
+
+(def ^:private legacy-mtp-flag
+  "Pre-framework app-setting flag that marked the :migration/mtp-tag-sources migration
+  as done. Superseded by the applied-id ledger; retained only to seed a baseline on
+  installs that ran the flag-based code, so that migration isn't re-run."
+  :cache/mtp-tag-migration-done?)
+
+(defn seed-legacy-baseline!
+  "Bridge a pre-framework one-off migration recorded via an app-setting flag into the
+  applied-id ledger: when the flag is set and :migration/mtp-tag-sources is not yet
+  recorded, record it as already applied (without running it) and clear the obsolete
+  flag. Returns true when it seeded, else nil. Dev-only — removable once no DB still
+  carries the flag."
+  [conn]
+  (when (and (cache/app-setting (d/db conn) legacy-mtp-flag)
+             (not (contains? (applied-ids (d/db conn)) :migration/mtp-tag-sources)))
+    (record-applied! conn :migration/mtp-tag-sources)
+    (cache/set-app-setting! conn legacy-mtp-flag nil)
+    true))

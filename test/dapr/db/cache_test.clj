@@ -161,28 +161,6 @@
                                                     :root "smb://h/s/")])
       (is (= "PathY" (:artist (get (cache/library-catalog (d/db conn) b) ["y.mp3" 2])))))))
 
-(deftest migrate-mtp-tag-sources-test
-  (let [conn (cache/empty-conn)
-        f    (cache/upsert-library! conn {:name "F" :roots ["file:///r/"]})
-        m    (cache/upsert-library! conn {:name "M" :roots ["mtp://dev/"]})]
-    (cache/replace-library-tracks! conn f [(track "f.mp3" 3 :artist "F" :source :path
-                                                  :root "file:///r/")])
-    (cache/replace-library-tracks! conn m [(track "song.mp3" 1 :artist "Path" :source :path
-                                                  :root "mtp://dev/")
-                                           (track "emb.mp3" 2 :artist "Emb" :source :embedded
-                                                  :root "mtp://dev/")])
-    (testing "clears :path tag-source only on mtp-rooted tracks, so they re-read"
-      (is (= 1 (cache/migrate-mtp-tag-sources! conn)))
-      (let [cat-m (cache/library-catalog (d/db conn) m)
-            cat-f (cache/library-catalog (d/db conn) f)]
-        (is (nil? (:source (get cat-m ["song.mp3" 1]))) "mtp :path source cleared")
-        (is (= :embedded (:source (get cat-m ["emb.mp3" 2]))) "mtp :embedded left alone")
-        (is (= :path (:source (get cat-f ["f.mp3" 3]))) "file :path left alone")))
-
-    (testing "runs exactly once — a second call is a no-op"
-      (is (nil? (cache/migrate-mtp-tag-sources! conn)))
-      (is (nil? (:source (get (cache/library-catalog (d/db conn) m) ["song.mp3" 1])))))))
-
 (deftest incremental-replace-test
   (let [conn (cache/empty-conn)
         lib  (cache/upsert-library! conn {:name "L" :roots ["file:///r/"]})

@@ -98,7 +98,7 @@ device index next, the path last.
   filename-derived; `mtp` fills fields the embedded reader can't (an unsupported
   container, a corrupt header).
 - **`:source :embedded`, not a new `:device` value**: either view reflects the
-  files' embedded tags, so reusing `:embedded` keeps `dapr.cache`'s better-tags
+  files' embedded tags, so reusing `:embedded` keeps `dapr.db.cache`'s better-tags
   preference (`:embedded` beats `:path`) working unchanged. The layered merge
   keeps `:embedded` sticky — once any layer reports, a blank outer layer can't
   demote it back to `:path`.
@@ -131,14 +131,16 @@ resolves the first three, with `mtp` and path still behind it:
 - **Cache migration** *(done — option a)*: existing MTP tracks were cached with
   `:source :path` and an unchanged mtime, and `dapr.fs.nio/track-tags!` only
   re-reads entries without a recorded source, so they would have kept path tags
-  after the reader landed. `dapr.cache/migrate-mtp-tag-sources!` (run once at
-  startup from the `:dapr/cache` init, gated by an app-setting flag) retracts
+  after the reader landed. `dapr.db.migrations/migrate-mtp-tag-sources!` retracts
   `:track/tag-source` from every `:path`-sourced track under an `mtp://` root, so
-  the next scan re-reads it through the device index. Gating matters: an ungated
-  re-run would re-clear genuinely tagless files (device reported nothing) every
-  launch, re-paying the device read each time — the rejected option (b). Option
-  (c), do nothing, would have left existing libraries on path tags until an
-  mtime change.
+  the next scan re-reads it through the device reader. It's registered as the
+  **`:migration/mtp-tag-sources`** migration in `dapr.db.migrations` and run once from the
+  `:dapr/cache` init via the applied-id gate (`run-migrations!`). Running-once
+  matters: an ungated re-run would re-clear genuinely tagless files (device reported
+  nothing) every launch, re-paying the device read each time — the rejected option
+  (b). Option (c), do nothing, would have left existing libraries on path tags until
+  an mtime change. (Installs that ran the earlier flag-based version are bridged into
+  the applied-id ledger by `migrations/seed-legacy-baseline!` so it isn't re-run.)
 
 ## Verification status
 

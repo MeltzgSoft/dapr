@@ -66,3 +66,66 @@
         (is (= [] (migrations/run-migrations!
                    conn [{:migration/id :migration/seeded :migration/migrate (fn [_] (reset! ran true))}])))
         (is (false? @ran))))))
+
+;; --- the real registry (the :migration/mtp-tag-sources migration) ----------------------
+
+(defn- track [rel size & {:keys [artist source root]}]
+  {:rel rel :size size :artist artist :album nil :title nil
+   :root (or root "file:///r/") :mtime nil :source source})
+
+(defn- mtp-path-track
+  "A catalog track map cached path-derived under an mtp:// root."
+  [rel size]
+  (track rel size :artist "A" :source :path :root "mtp://dev/"))
+
+(deftest migrate-mtp-tag-sources-test
+  (let [conn (cache/empty-conn)
+        f    (cache/upsert-library! conn {:name "F" :roots ["file:///r/"]})
+        m    (cache/upsert-library! conn {:name "M" :roots ["mtp://dev/"]})]
+    (cache/replace-library-tracks! conn f [(track "f.mp3" 3 :artist "F" :source :path
+                                                  :root "file:///r/")])
+    (cache/replace-library-tracks! conn m [(track "song.mp3" 1 :artist "Path" :source :path
+                                                  :root "mtp://dev/")
+                                           (track "emb.mp3" 2 :artist "Emb" :source :embedded
+                                                  :root "mtp://dev/")])
+    (testing "clears :path tag-source only on mtp-rooted tracks, so they re-read"
+      (is (= 1 (migrations/migrate-mtp-tag-sources! conn)))
+      (let [cat-m (cache/library-catalog (d/db conn) m)
+            cat-f (cache/library-catalog (d/db conn) f)]
+        (is (nil? (:source (get cat-m ["song.mp3" 1]))) "mtp :path source cleared")
+        (is (= :embedded (:source (get cat-m ["emb.mp3" 2]))) "mtp :embedded left alone")
+        (is (= :path (:source (get cat-f ["f.mp3" 3]))) "file :path left alone")))
+    (testing "re-running finds nothing left to clear (run-once is enforced by the
+              applied-id gate, not this fn)"
+      (is (= 0 (migrations/migrate-mtp-tag-sources! conn)))
+      (is (nil? (:source (get (cache/library-catalog (d/db conn) m) ["song.mp3" 1])))))))
+
+(deftest registry-runs-mtp-migration-once-test
+  (let [conn (cache/empty-conn)
+        m    (cache/upsert-library! conn {:name "M" :roots ["mtp://dev/"]})]
+    (cache/replace-library-tracks! conn m [(mtp-path-track "song.mp3" 1)])
+    (testing "running the real registry clears the mtp :path source and records the id"
+      (is (= [:migration/mtp-tag-sources] (migrations/run-migrations! conn)))
+      (is (nil? (:source (get (cache/library-catalog (d/db conn) m) ["song.mp3" 1]))))
+      (is (contains? (migrations/applied-ids (d/db conn)) :migration/mtp-tag-sources)))
+    (testing "a second run is a no-op — the applied-id set, not the fn, enforces once"
+      (cache/replace-library-tracks! conn m [(mtp-path-track "song.mp3" 1)]) ; re-scan re-adds :path
+      (is (= [] (migrations/run-migrations! conn)))
+      (is (= :path (:source (get (cache/library-catalog (d/db conn) m) ["song.mp3" 1])))
+          "not re-cleared: :migration/mtp-tag-sources already recorded"))))
+
+(deftest seed-legacy-baseline-records-without-running-test
+  (let [conn (cache/empty-conn)
+        m    (cache/upsert-library! conn {:name "M" :roots ["mtp://dev/"]})]
+    (cache/replace-library-tracks! conn m [(mtp-path-track "song.mp3" 1)])
+    (cache/set-app-setting! conn :cache/mtp-tag-migration-done? true)
+    (testing "the legacy flag seeds :migration/mtp-tag-sources as applied without running the fn"
+      (is (true? (migrations/seed-legacy-baseline! conn)))
+      (is (contains? (migrations/applied-ids (d/db conn)) :migration/mtp-tag-sources))
+      (is (= :path (:source (get (cache/library-catalog (d/db conn) m) ["song.mp3" 1])))
+          "migrate fn did not run — source untouched")
+      (is (nil? (cache/app-setting (d/db conn) :cache/mtp-tag-migration-done?))
+          "obsolete flag cleared"))
+    (testing "after seeding, run-migrations! and a repeat seed are both no-ops"
+      (is (= [] (migrations/run-migrations! conn)))
+      (is (nil? (migrations/seed-legacy-baseline! conn))))))

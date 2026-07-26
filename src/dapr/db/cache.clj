@@ -13,7 +13,6 @@
   (:require [clojure.edn :as edn]
             [clojure.java.io :as io]
             [datascript.core :as d]
-            [dapr.device.format :as device]
             [dapr.fs.paths :as paths])
   (:import (java.io File)
            (java.nio.file CopyOption Files StandardCopyOption)))
@@ -342,39 +341,3 @@
                       [?t :track/rel ?rel] [?t :track/size ?size]]
                     (d/db conn) lib-eid rel size)]
     (d/transact! conn [[:db/retractEntity p]])))
-
-;; --- migrations --------------------------------------------------------------
-
-(def ^:private mtp-tag-migration-key
-  "App-setting flag marking the one-off mtp tag-source migration as done."
-  :cache/mtp-tag-migration-done?)
-
-(defn migrate-mtp-tag-sources!
-  "One-off migration for the arrival of the mtp:// tag reader (dapr.device.mtp.tag):
-  retract :track/tag-source from every track cached path-derived (:source :path)
-  that has a presence under an mtp:// root, so the next scan re-reads it through the
-  device's media index instead of reusing its stale path tags. MTP tracks scanned
-  before the reader landed were cached :source :path with an unchanged mtime, and
-  dapr.fs.nio/track-tags! reuses any entry that has a recorded source — so without
-  this they'd keep path-derived tags until their mtime changed.
-
-  Gated by an app-setting flag so it runs exactly once per install: re-running would
-  also clear the source of genuinely tagless mtp files (a device whose media scanner
-  reported nothing, left at :path by the re-read), forcing a wasted device read every
-  startup. Returns nil once the flag is set (already migrated); otherwise runs and
-  returns the number of tracks cleared (which may be 0), so the caller knows to
-  persist the flag. Retract-only, no I/O."
-  [conn]
-  (when-not (app-setting (d/db conn) mtp-tag-migration-key)
-    (let [eids (->> (d/q '[:find ?t ?root
-                           :where
-                           [?t :track/tag-source :path]
-                           [?p :presence/track ?t]
-                           [?p :presence/root ?root]]
-                         (d/db conn))
-                    (into #{} (comp (filter (fn [[_ root]] (= :mtp (device/device-type root))))
-                                    (map first))))]
-      (when (seq eids)
-        (d/transact! conn (mapv (fn [t] [:db/retract t :track/tag-source :path]) eids)))
-      (set-app-setting! conn mtp-tag-migration-key true)
-      (count eids))))
