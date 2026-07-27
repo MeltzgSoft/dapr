@@ -63,8 +63,8 @@ jobs:
       - name: Run integration tests
         run: clojure -M:integration
 
-      # Diagnostic: surface the macOS Samba log if the SMB tests fail.
+      # Diagnostic: surface the macOS Samba log if the integration step failed.
       - name: Dump macOS Samba log
-        if: always() && runner.os == 'macOS'
+        if: failure() && runner.os == 'macOS'
         shell: bash
         run: cat "$RUNNER_TEMP"/smb/log.* 2>/dev/null || echo "(no Samba log)"
