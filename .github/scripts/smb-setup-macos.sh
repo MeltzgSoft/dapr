@@ -18,6 +18,14 @@ sudo mkdir -p "$MUSIC" "$PRIVATE"
 if ! id dapr >/dev/null 2>&1; then
   sudo sysadminctl -addUser dapr -password 'Secretpass1!'
 fi
+# A sysadminctl-created account often can't authenticate over SMB until its
+# password is re-set through dscl, which (re)generates the SMB-compatible
+# password hash. Without this, smbd returns "unknown user name or bad password".
+sudo dscl . -passwd /Users/dapr 'Secretpass1!'
+# If SMB access is gated by the com.apple.access_smb group, add dapr to it.
+if sudo dscl . -read /Groups/com.apple.access_smb >/dev/null 2>&1; then
+  sudo dscl . -append /Groups/com.apple.access_smb GroupMembership dapr || true
+fi
 sudo chown -R dapr:staff "$MUSIC" "$PRIVATE"
 sudo chmod -R 0700 "$MUSIC" "$PRIVATE"
 
