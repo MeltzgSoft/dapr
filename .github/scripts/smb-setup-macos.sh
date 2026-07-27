@@ -20,11 +20,17 @@ SMBD="$PREFIX/sbin/samba-dot-org-smbd"
 [ -x "$SMBD" ] || SMBD="$PREFIX/sbin/smbd"
 SMBPASSWD="$PREFIX/bin/smbpasswd"
 
-ROOT="$RUNNER_TEMP/smb"
-MUSIC="$ROOT/music"
-PRIVATE="$ROOT/private"
-mkdir -p "$MUSIC" "$PRIVATE"
-chmod 0777 "$MUSIC" "$PRIVATE"
+# Samba's own state (tdbs, logs) lives under RUNNER_TEMP — smbd touches it as
+# root. The *share* dirs must instead sit somewhere the mapped unix user (dapr)
+# can traverse: RUNNER_TEMP is under /Users/runner (mode 0700), so dapr couldn't
+# reach shares there and writes fail with "Access is denied". /private/tmp is
+# world-traversable, so the shares go there.
+STATE="$RUNNER_TEMP/smb"
+SHARE="/private/tmp/dapr-smb"
+MUSIC="$SHARE/music"
+PRIVATE="$SHARE/private"
+mkdir -p "$STATE" "$MUSIC" "$PRIVATE"
+chmod -R 0777 "$SHARE"
 
 # smbpasswd has no --configfile flag, so write smb.conf to Samba's compiled-in
 # default path; every tool (smbpasswd, smbd) then reads it without a flag.
@@ -45,13 +51,13 @@ sudo tee "$CONF" >/dev/null <<EOF
   map to guest = never
   smb ports = 445
   security = user
-  passdb backend = tdbsam:$ROOT/passdb.tdb
-  private dir = $ROOT
-  lock directory = $ROOT
-  state directory = $ROOT
-  cache directory = $ROOT
-  pid directory = $ROOT
-  log file = $ROOT/log.%m
+  passdb backend = tdbsam:$STATE/passdb.tdb
+  private dir = $STATE
+  lock directory = $STATE
+  state directory = $STATE
+  cache directory = $STATE
+  pid directory = $STATE
+  log file = $STATE/log.%m
 
 [Music]
   path = $MUSIC
@@ -83,5 +89,5 @@ for _ in $(seq 1 30); do
   sleep 1
 done
 echo "Samba did not start listening on 445" >&2
-cat "$ROOT"/log.* 2>/dev/null >&2 || true
+cat "$STATE"/log.* 2>/dev/null >&2 || true
 exit 1
