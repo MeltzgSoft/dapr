@@ -58,16 +58,25 @@ sudo tee "$CONF" >/dev/null <<EOF
   cache directory = $STATE
   pid directory = $STATE
   log file = $STATE/log.%m
+  log level = 2
 
 [Music]
   path = $MUSIC
   read only = no
   valid users = dapr
+  force user = dapr
+  create mask = 0666
+  directory mask = 0777
+  delete readonly = yes
 
 [Private]
   path = $PRIVATE
   read only = no
   valid users = dapr
+  force user = dapr
+  create mask = 0666
+  directory mask = 0777
+  delete readonly = yes
 EOF
 
 # Set dapr's Samba (NT-hash) password in the passdb (reads $CONF from its default
