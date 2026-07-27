@@ -4,6 +4,9 @@ on:
   pull_request:
   push:
     branches: [main]
+  # Callable as a gate from other workflows (e.g. release.yml) so the release
+  # validates on the same matrix as CI.
+  workflow_call:
 
 jobs:
   test:
