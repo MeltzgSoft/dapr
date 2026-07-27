@@ -20,8 +20,14 @@
 
 (def ^:private devices
   "Attached MTP devices, or nil when discovery fails (no native libmtp) or none is
-  connected — in which case these tests skip."
-  (try (seq (mtp/devices!)) (catch Throwable _ nil)))
+  connected — in which case these tests skip. Devices whose storage list can't be
+  browsed are dropped as phantoms: Windows enumerates WPD device-interface GUIDs
+  (e.g. mtp://0:0:{b486c821-...}) that aren't real, browseable MTP devices."
+  (try
+    (seq (filter #(try (device-fs/dir-children! (:uri %)) true
+                       (catch Throwable _ false))
+                 (mtp/devices!)))
+    (catch Throwable _ nil)))
 
 (defn- skip [why]
   (println (str "  (skipping MTP integration test — " why ")")))

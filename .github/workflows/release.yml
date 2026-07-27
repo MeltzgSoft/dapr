@@ -1,8 +1,9 @@
 name: Release
 
-# On a v#.#.# tag, run the unit + integration suites and — only if both pass —
-# build an AOT uberjar per OS (each carrying its own JavaFX natives, see
-# build.clj) and attach them all to a single GitHub release.
+# On a v#.#.# tag, run the unit + integration suites (the same reusable
+# workflows, and hence the same windows/mac/linux matrix, as CI) and — only if
+# both pass — build an AOT uberjar per OS (each carrying its own JavaFX natives,
+# see build.clj) and attach them all to a single GitHub release.
 
 on:
   push:
@@ -13,68 +14,14 @@ permissions:
   contents: write
 
 jobs:
-  # Gate the release on the unit suite: no jars are built or published unless
-  # tests pass.
+  # Gate the release on the full CI matrix: no jars are built or published unless
+  # the unit + integration suites pass on every OS. These reuse the same
+  # workflows CI runs (windows/mac/linux matrix, native SMB provisioning, etc.).
   test:
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v7
+    uses: ./.github/workflows/test.yml
 
-      - name: Set up JDK
-        uses: actions/setup-java@v5
-        with:
-          distribution: temurin
-          java-version: '25'
-
-      - name: Set up Clojure
-        uses: DeLaGuardo/setup-clojure@13.6.1
-        with:
-          cli: latest
-
-      - name: Cache dependencies
-        uses: actions/cache@v5
-        with:
-          path: |
-            ~/.m2/repository
-            ~/.gitlibs
-            .cpcache
-          key: cljdeps-${{ hashFiles('deps.edn') }}
-          restore-keys: cljdeps-
-
-      - name: Run tests
-        run: clojure -M:test
-
-  # Integration suite (SMB via Testcontainers/Docker; MTP skips without hardware).
   integration:
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v7
-
-      - name: Set up JDK
-        uses: actions/setup-java@v5
-        with:
-          distribution: temurin
-          java-version: '25'
-
-      - name: Set up Clojure
-        uses: DeLaGuardo/setup-clojure@13.6.1
-        with:
-          cli: latest
-
-      - name: Cache dependencies
-        uses: actions/cache@v5
-        with:
-          path: |
-            ~/.m2/repository
-            ~/.gitlibs
-            .cpcache
-          key: cljdeps-${{ hashFiles('deps.edn') }}
-          restore-keys: cljdeps-
-
-      - name: Run integration tests
-        run: clojure -M:integration
+    uses: ./.github/workflows/integration.yml
 
   build:
     needs: [test, integration]

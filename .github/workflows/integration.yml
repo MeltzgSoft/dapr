@@ -1,18 +1,31 @@
 name: Integration
 
-# Integration tests against live external services (clojure -M:integration). Each
-# test's :once fixture starts its backend with Testcontainers, so the job only
-# needs Docker (present on ubuntu-latest) — no manual service setup. Tests skip
-# when Docker is unavailable.
+# Integration tests against live external services (clojure -M:integration).
+#
+# The SMB tests need a live SMB server, provisioned differently per OS because the
+# GitHub runners differ:
+#   - Linux:   the test's :once fixture starts a dperson/samba Testcontainer
+#              (Docker is present on ubuntu-latest), so no setup step is needed.
+#   - macOS /  those runners can't run the Linux Samba image (no Docker on macOS;
+#     Windows: Windows runs only Windows containers), so a setup step below stands
+#              up the host's native SMB server with the same shares instead.
+# The MTP tests run only when a real device is attached, so they skip in CI.
 
 on:
   pull_request:
   push:
     branches: [main]
+  # Callable as a gate from other workflows (e.g. release.yml) so the release
+  # validates on the same matrix as CI.
+  workflow_call:
 
 jobs:
   integration:
-    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
     steps:
       - name: Checkout
         uses: actions/checkout@v7
@@ -35,8 +48,26 @@ jobs:
             ~/.m2/repository
             ~/.gitlibs
             .cpcache
-          key: cljdeps-${{ hashFiles('deps.edn') }}
-          restore-keys: cljdeps-
+          key: cljdeps-${{ matrix.os }}-${{ hashFiles('deps.edn') }}
+          restore-keys: cljdeps-${{ matrix.os }}-
+
+      # Linux uses a Testcontainer from the fixture; macOS/Windows need the host's
+      # native SMB server provisioned with the Music (guest) and Private shares.
+      - name: Provision native SMB server (macOS)
+        if: runner.os == 'macOS'
+        shell: bash
+        run: .github/scripts/smb-setup-macos.sh
+
+      - name: Provision native SMB server (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: .github/scripts/smb-setup-windows.ps1
 
       - name: Run integration tests
         run: clojure -M:integration
+
+      # Diagnostic: surface the macOS Samba log if the integration step failed.
+      - name: Dump macOS Samba log
+        if: failure() && runner.os == 'macOS'
+        shell: bash
+        run: cat "$RUNNER_TEMP"/smb/log.* 2>/dev/null || echo "(no Samba log)"

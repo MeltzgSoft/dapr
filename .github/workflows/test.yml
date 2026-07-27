@@ -4,10 +4,17 @@ on:
   pull_request:
   push:
     branches: [main]
+  # Callable as a gate from other workflows (e.g. release.yml) so the release
+  # validates on the same matrix as CI.
+  workflow_call:
 
 jobs:
   test:
-    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
     steps:
       - name: Checkout
         uses: actions/checkout@v7
@@ -30,8 +37,8 @@ jobs:
             ~/.m2/repository
             ~/.gitlibs
             .cpcache
-          key: cljdeps-${{ hashFiles('deps.edn') }}
-          restore-keys: cljdeps-
+          key: cljdeps-${{ matrix.os }}-${{ hashFiles('deps.edn') }}
+          restore-keys: cljdeps-${{ matrix.os }}-
 
       - name: Run tests
         run: clojure -M:test

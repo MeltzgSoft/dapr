@@ -1,14 +1,26 @@
 (ns dapr.device.smb.fs-integration-test
   "Integration tests that exercise the real SMB code path — smb-nio / jcifs round
-  trips against a live Samba server, the one thing the jimfs-backed unit tests
+  trips against a live SMB server, the one thing the jimfs-backed unit tests
   cannot cover. Part of `clojure -M:integration` (not the hermetic default
   `clojure -X:test`).
 
-  A :once fixture starts a guest + authenticated Samba server in a Docker container
-  via Testcontainers, so there's no manual setup — a run needs only Docker, and the
-  tests skip when it is unavailable. The container is bound to the host's port 445
-  (jcifs ignores a non-default SMB port, so a random mapped port would not work);
-  that port must be free."
+  The :once fixture picks its SMB backend by OS, because GitHub's hosted runners
+  differ (see integration.yml):
+
+    - Linux: start a dperson/samba server in a Docker container via Testcontainers,
+      so no host setup is needed. Bound to the host's port 445 (jcifs ignores a
+      non-default SMB port, so a random mapped port would not work); that port
+      must be free.
+    - macOS / Windows: those runners can't run the Linux Samba image (no Docker on
+      macOS; Windows runs only Windows containers), so the CI workflow instead
+      provisions the host's *native* SMB server (see integration.yml) with Music
+      and Private shares on port 445, both reachable by user dapr. Native guest
+      SMB is unavailable on these runners (Windows hardens it off; macOS needs
+      GUI-granted Full Disk Access for smbd), so the fixture authenticates every
+      host there — the anonymous code path is exercised by the Linux run.
+
+  Either way there is no graceful skip: if the Linux container can't start, or the
+  native shares aren't reachable, the tests fail rather than silently pass."
   (:require [clojure.string :as str]
             [clojure.test :refer [deftest is testing use-fixtures]]
             [dapr.device.fs :as device-fs]
@@ -19,14 +31,23 @@
            (org.testcontainers.containers FixedHostPortGenericContainer)
            (org.testcontainers.containers.wait.strategy Wait)))
 
-;; The container binds host 445; the guest share is reached via 127.0.0.1 and the
+;; The server listens on 445; the guest share is reached via 127.0.0.1 and the
 ;; authenticated share via localhost — distinct host strings so dapr.device.smb.fs's
 ;; per-host FileSystem cache keeps the anonymous and authenticated connections apart.
 (def ^:private guest-url  "smb://127.0.0.1/Music/")
 (def ^:private auth-url   "smb://localhost/Private/")
-(def ^:private auth-creds {:username "dapr" :password "secretpass"})
+;; Password satisfies Windows' local-account complexity policy (New-LocalUser
+;; rejects a simple one), so the same credentials work on every backend.
+(def ^:private auth-creds {:username "dapr" :password "Secretpass1!"})
 
+(def ^:private linux?
+  (str/includes? (str/lower-case (System/getProperty "os.name")) "linux"))
+
+;; Holds the running Testcontainer on Linux (so the fixture can stop it); stays nil
+;; on macOS/Windows where the native server is provisioned/owned by the CI workflow.
 (defonce ^:private container (atom nil))
+;; True while the fixture's backend is up, whichever OS. Tests read it via running?.
+(defonce ^:private backend-ready? (atom false))
 
 (defn- start-samba!
   "Start a dperson/samba container with a guest share (Music) and an
@@ -37,7 +58,7 @@
     (.withFixedExposedPort (int 445) (int 445))
     (.withCommand (into-array String
                               ["-p"
-                               "-u" "dapr;secretpass"
+                               "-u" "dapr;Secretpass1!"
                                "-g" "server min protocol = SMB2"
                                "-g" "map to guest = Bad User"
                                "-s" "Music;/share/music;yes;no;yes;all;all;all"
@@ -45,25 +66,30 @@
     (.waitingFor (Wait/forListeningPort))
     (.start)))
 
-(defn- with-samba
-  "Once-per-namespace fixture: start the Samba container, run the tests, stop it.
-  If Docker is unavailable the container stays nil and every test skips."
+(defn- with-smb-backend
+  "Once-per-namespace fixture. On Linux it starts (and later stops) the Samba
+  container; on macOS/Windows it uses the CI-provisioned native SMB server as-is.
+  On those OSes there is no guest share, so it authenticates every host for the
+  whole run (the guest/anonymous path is covered by the Linux run). No graceful
+  skip — a container that won't start, or unreachable native shares, surface as
+  test failures."
   [run-tests]
-  (let [c (try (start-samba!)
-               (catch Throwable e
-                 (println "  (skipping SMB integration tests — Docker unavailable:"
-                          (.getMessage e) ")")
-                 nil))]
+  (let [c (when linux? (start-samba!))]
     (reset! container c)
+    (reset! backend-ready? true)
     (try
-      (run-tests)
+      (if linux?
+        (run-tests)
+        (binding [smb/*credential-lookup* (constantly auth-creds)]
+          (run-tests)))
       (finally
         (when c (.stop c))
-        (reset! container nil)))))
+        (reset! container nil)
+        (reset! backend-ready? false)))))
 
-(use-fixtures :once with-samba)
+(use-fixtures :once with-smb-backend)
 
-(defn- running? [] (some? @container))
+(defn- running? [] @backend-ready?)
 
 (defn- seed-local!
   "Create a local temp directory containing `content` at relative path `rel`, and
