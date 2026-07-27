@@ -13,8 +13,11 @@
       must be free.
     - macOS / Windows: those runners can't run the Linux Samba image (no Docker on
       macOS; Windows runs only Windows containers), so the CI workflow instead
-      provisions the host's *native* SMB server with the same Music (guest) and
-      Private (dapr/secretpass) shares on port 445, and the fixture just uses it.
+      provisions the host's *native* SMB server (see integration.yml) with Music
+      and Private shares on port 445, both reachable by user dapr. Native guest
+      SMB is unavailable on these runners (Windows hardens it off; macOS needs
+      GUI-granted Full Disk Access for smbd), so the fixture authenticates every
+      host there — the anonymous code path is exercised by the Linux run.
 
   Either way there is no graceful skip: if the Linux container can't start, or the
   native shares aren't reachable, the tests fail rather than silently pass."
@@ -33,7 +36,9 @@
 ;; per-host FileSystem cache keeps the anonymous and authenticated connections apart.
 (def ^:private guest-url  "smb://127.0.0.1/Music/")
 (def ^:private auth-url   "smb://localhost/Private/")
-(def ^:private auth-creds {:username "dapr" :password "secretpass"})
+;; Password satisfies Windows' local-account complexity policy (New-LocalUser
+;; rejects a simple one), so the same credentials work on every backend.
+(def ^:private auth-creds {:username "dapr" :password "Secretpass1!"})
 
 (def ^:private linux?
   (str/includes? (str/lower-case (System/getProperty "os.name")) "linux"))
@@ -53,7 +58,7 @@
     (.withFixedExposedPort (int 445) (int 445))
     (.withCommand (into-array String
                               ["-p"
-                               "-u" "dapr;secretpass"
+                               "-u" "dapr;Secretpass1!"
                                "-g" "server min protocol = SMB2"
                                "-g" "map to guest = Bad User"
                                "-s" "Music;/share/music;yes;no;yes;all;all;all"
@@ -64,14 +69,19 @@
 (defn- with-smb-backend
   "Once-per-namespace fixture. On Linux it starts (and later stops) the Samba
   container; on macOS/Windows it uses the CI-provisioned native SMB server as-is.
-  No graceful skip — a container that won't start, or unreachable native shares,
-  surface as test failures."
+  On those OSes there is no guest share, so it authenticates every host for the
+  whole run (the guest/anonymous path is covered by the Linux run). No graceful
+  skip — a container that won't start, or unreachable native shares, surface as
+  test failures."
   [run-tests]
   (let [c (when linux? (start-samba!))]
     (reset! container c)
     (reset! backend-ready? true)
     (try
-      (run-tests)
+      (if linux?
+        (run-tests)
+        (binding [smb/*credential-lookup* (constantly auth-creds)]
+          (run-tests)))
       (finally
         (when c (.stop c))
         (reset! container nil)

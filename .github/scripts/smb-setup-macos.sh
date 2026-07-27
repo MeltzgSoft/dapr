@@ -3,38 +3,30 @@ set -euo pipefail
 
 # Provision the macOS runner's built-in SMB server with the shares the SMB
 # integration tests expect, mirroring the dperson/samba container used on Linux:
-#   - Music:   guest-accessible, read-write
-#   - Private: user dapr / secretpass, read-write
+#   - Music   and Private, both read-write and accessible by user dapr
 # on port 445, reachable at both 127.0.0.1 and localhost.
 #
-# NOTE: macOS guest SMB access and the `sharing` protocol-mask flags are
-# version-sensitive; treat this as a first cut that may need iteration against
-# the actual GitHub runner image.
+# The tests authenticate as dapr here (native guest SMB isn't available on the
+# macOS runner), so no guest configuration is needed — the anonymous path is
+# exercised by the Linux run.
 
-MUSIC="/tmp/smbshare/music"
-PRIVATE="/tmp/smbshare/private"
+MUSIC="/Users/Shared/smbshare/music"
+PRIVATE="/Users/Shared/smbshare/private"
 sudo mkdir -p "$MUSIC" "$PRIVATE"
-sudo chmod 0777 "$MUSIC"
 
-# Auth user for the Private share.
+# Auth user for both shares.
 if ! id dapr >/dev/null 2>&1; then
-  sudo sysadminctl -addUser dapr -password secretpass
+  sudo sysadminctl -addUser dapr -password 'Secretpass1!'
 fi
-sudo chown -R dapr:staff "$PRIVATE"
-sudo chmod 0700 "$PRIVATE"
+sudo chown -R dapr:staff "$MUSIC" "$PRIVATE"
+sudo chmod -R 0700 "$MUSIC" "$PRIVATE"
 
-# Allow guest SMB access (disabled by default on macOS).
-sudo defaults write \
-  /Library/Preferences/SystemConfiguration/com.apple.smb.server \
-  AllowGuestAccess -bool YES
+# Register both directories as SMB share points. `-s 001` enables the share for
+# SMB only (the 3-bit mask is AFP,FTP,SMB); no `-g`, so access requires auth.
+sudo sharing -a "$MUSIC"   -S Music   -s 001
+sudo sharing -a "$PRIVATE" -S Private -s 001
 
-# Register the shares. `-s` / `-g` are 3-bit protocol masks in AFP,FTP,SMB order:
-#   -s 001 => share enabled for SMB only
-#   -g 001 => guest allowed over SMB only  (000 => no guest, i.e. auth required)
-sudo sharing -a "$MUSIC"   -S Music   -s 001 -g 001
-sudo sharing -a "$PRIVATE" -S Private -s 001 -g 000
-
-# Restart smbd so it picks up the new shares and guest setting.
+# Restart smbd so it picks up the new shares.
 sudo launchctl kickstart -k system/com.apple.smbd \
   || sudo launchctl load -w /System/Library/LaunchDaemons/com.apple.smbd.plist
 
