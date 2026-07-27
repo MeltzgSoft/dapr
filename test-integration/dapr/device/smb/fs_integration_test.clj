@@ -1,14 +1,23 @@
 (ns dapr.device.smb.fs-integration-test
   "Integration tests that exercise the real SMB code path — smb-nio / jcifs round
-  trips against a live Samba server, the one thing the jimfs-backed unit tests
+  trips against a live SMB server, the one thing the jimfs-backed unit tests
   cannot cover. Part of `clojure -M:integration` (not the hermetic default
   `clojure -X:test`).
 
-  A :once fixture starts a guest + authenticated Samba server in a Docker container
-  via Testcontainers, so there's no manual setup — a run needs only Docker, and the
-  tests skip when it is unavailable. The container is bound to the host's port 445
-  (jcifs ignores a non-default SMB port, so a random mapped port would not work);
-  that port must be free."
+  The :once fixture picks its SMB backend by OS, because GitHub's hosted runners
+  differ (see integration.yml):
+
+    - Linux: start a dperson/samba server in a Docker container via Testcontainers,
+      so no host setup is needed. Bound to the host's port 445 (jcifs ignores a
+      non-default SMB port, so a random mapped port would not work); that port
+      must be free.
+    - macOS / Windows: those runners can't run the Linux Samba image (no Docker on
+      macOS; Windows runs only Windows containers), so the CI workflow instead
+      provisions the host's *native* SMB server with the same Music (guest) and
+      Private (dapr/secretpass) shares on port 445, and the fixture just uses it.
+
+  Either way there is no graceful skip: if the Linux container can't start, or the
+  native shares aren't reachable, the tests fail rather than silently pass."
   (:require [clojure.string :as str]
             [clojure.test :refer [deftest is testing use-fixtures]]
             [dapr.device.fs :as device-fs]
@@ -19,14 +28,21 @@
            (org.testcontainers.containers FixedHostPortGenericContainer)
            (org.testcontainers.containers.wait.strategy Wait)))
 
-;; The container binds host 445; the guest share is reached via 127.0.0.1 and the
+;; The server listens on 445; the guest share is reached via 127.0.0.1 and the
 ;; authenticated share via localhost — distinct host strings so dapr.device.smb.fs's
 ;; per-host FileSystem cache keeps the anonymous and authenticated connections apart.
 (def ^:private guest-url  "smb://127.0.0.1/Music/")
 (def ^:private auth-url   "smb://localhost/Private/")
 (def ^:private auth-creds {:username "dapr" :password "secretpass"})
 
+(def ^:private linux?
+  (str/includes? (str/lower-case (System/getProperty "os.name")) "linux"))
+
+;; Holds the running Testcontainer on Linux (so the fixture can stop it); stays nil
+;; on macOS/Windows where the native server is provisioned/owned by the CI workflow.
 (defonce ^:private container (atom nil))
+;; True while the fixture's backend is up, whichever OS. Tests read it via running?.
+(defonce ^:private backend-ready? (atom false))
 
 (defn- start-samba!
   "Start a dperson/samba container with a guest share (Music) and an
@@ -45,22 +61,25 @@
     (.waitingFor (Wait/forListeningPort))
     (.start)))
 
-(defn- with-samba
-  "Once-per-namespace fixture: start the Samba container, run the tests, stop it.
-  No graceful skip — if the container can't start (e.g. Docker unavailable), the
-  exception propagates and the namespace's tests fail."
+(defn- with-smb-backend
+  "Once-per-namespace fixture. On Linux it starts (and later stops) the Samba
+  container; on macOS/Windows it uses the CI-provisioned native SMB server as-is.
+  No graceful skip — a container that won't start, or unreachable native shares,
+  surface as test failures."
   [run-tests]
-  (let [c (start-samba!)]
+  (let [c (when linux? (start-samba!))]
     (reset! container c)
+    (reset! backend-ready? true)
     (try
       (run-tests)
       (finally
         (when c (.stop c))
-        (reset! container nil)))))
+        (reset! container nil)
+        (reset! backend-ready? false)))))
 
-(use-fixtures :once with-samba)
+(use-fixtures :once with-smb-backend)
 
-(defn- running? [] (some? @container))
+(defn- running? [] @backend-ready?)
 
 (defn- seed-local!
   "Create a local temp directory containing `content` at relative path `rel`, and
