@@ -53,6 +53,9 @@ src/dapr/
     library.clj   pure  libraries, tracks, catalogs, identity, audio filter
     capacity.clj  pure  budget / used / would-fit? math
     plan.clj      pure  selection-plan -> [add/delete/skip/blocked]
+  db/
+    cache.clj      I/O   DataScript cache + EDN snapshot (system of record)
+    migrations.clj I/O   named run-once DB migrations (see "Database migrations")
   fs/
     nio.clj       I/O   catalog!, copy!/delete!, capacity & device queries
     mtp.clj       I/O   MTP device discovery via melt-jfs (lazy, optional)
@@ -70,7 +73,49 @@ resources/config.edn  Integrant system map
 ```
 
 Libraries are persisted at `$XDG_CONFIG_HOME/dapr/libraries.edn` (fallback
-`~/.config/dapr/…`, `%APPDATA%\dapr\…` on Windows).
+`~/.config/dapr/…`, `%APPDATA%\dapr\…` on Windows). The scan cache and the system
+of record for libraries live in a DataScript DB snapshotted to `…/dapr/cache.edn`
+(`dapr.db.cache`).
+
+### Database migrations
+
+The cache DB evolves through **named, run-once migrations** in `dapr.db.migrations`.
+Each is `{:id <keyword> :migrate <fn of conn>}`; the DB records every applied
+migration (`:migration/id`), and on startup `run-migrations!` (called from the
+`:dapr/cache` component) applies any whose id is **not yet recorded**, in registry
+order, then snapshots. Migrations are keyed by name, **not a version number** — so
+adding one never means picking "the next number," and two branches can each add a
+migration without colliding.
+
+To add one:
+
+1. **Write the migrate fn** in `dapr.db.migrations` — a `!`-fn of the `conn` that
+   makes its change by querying then transacting. Make it **idempotent /
+   re-runnable**: it's recorded only after it returns, so one that throws is retried
+   next startup.
+2. **Append it to `registry`** with a fresh, descriptive keyword `:id`. Vector order
+   is the order migrations run.
+3. **Add a test** in `dapr.db.migrations-test` (see the `marker-migration` helper for
+   the framework, or drive the real `registry` end-to-end).
+
+```clojure
+;; dapr.db.migrations
+(defn migrate-drop-blank-albums!
+  "Retract :track/album entries stored as a blank string."
+  [conn]
+  (let [eids (d/q '[:find [?t ...] :where [?t :track/album ""]] (d/db conn))]
+    (when (seq eids)
+      (d/transact! conn (mapv (fn [t] [:db/retract t :track/album ""]) eids)))))
+
+(def registry
+  [;; …existing migrations…
+   {:id :drop-blank-albums :migrate migrate-drop-blank-albums!}]) ; append here
+```
+
+This is **data** migration only. It's separate from `dapr.db.cache/snapshot-version`,
+which guards the on-disk EDN *shape*: bump that (not a migration) when the snapshot
+format itself changes, and an older/unreadable snapshot is backed up and the DB
+rebuilt from scratch. Inspect what has run with `applied-ids` / `applied`.
 
 ## Requirements
 
