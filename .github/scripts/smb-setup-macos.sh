@@ -65,6 +65,7 @@ sudo tee "$CONF" >/dev/null <<EOF
   read only = no
   valid users = dapr
   force user = dapr
+  admin users = dapr
   create mask = 0666
   directory mask = 0777
   delete readonly = yes
@@ -74,6 +75,7 @@ sudo tee "$CONF" >/dev/null <<EOF
   read only = no
   valid users = dapr
   force user = dapr
+  admin users = dapr
   create mask = 0666
   directory mask = 0777
   delete readonly = yes
