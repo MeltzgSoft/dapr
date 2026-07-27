@@ -2,7 +2,7 @@
   "Side-effecting execution of a selective library sync. The plan is computed by
   the pure dapr.domain.plan; this namespace scans libraries, queries capacity,
   and performs the add/move/delete operations (all fns end in !)."
-  (:require [dapr.cache :as cache]
+  (:require [dapr.db.cache :as cache]
             [dapr.device.fs :as device-fs]
             [dapr.domain.library :as lib]
             [dapr.domain.plan :as plan]

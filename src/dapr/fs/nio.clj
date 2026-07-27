@@ -46,7 +46,7 @@
   this [rel size] with the same mtime *and a recorded :source* — so an unchanged
   file is not re-read, which is the expensive part over MTP/SMB. A cached entry
   without a :source predates source tracking, so it is re-read to record one
-  (letting embedded tags be preferred over path-derived — see dapr.cache)."
+  (letting embedded tags be preferred over path-derived — see dapr.db.cache)."
   [known {:keys [rel size mtime] :as m} ^Path p]
   (let [cached (when known (known rel size))]
     (if (and cached (:source cached) (= mtime (:mtime cached)))

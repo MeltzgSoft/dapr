@@ -5,11 +5,12 @@
   conventions from the backend best-practices do not apply.)"
   (:require [cljfx.api :as fx]
             [clojure.java.io :as io]
-            [dapr.cache :as cache]
+            [dapr.db.cache :as cache]
             [dapr.device.mtp.fs :as mtp-fs]
             [dapr.device.smb.fs :as smb-fs]
             [dapr.library.store :as store]
             [dapr.log :as log]
+            [dapr.db.migrations :as migrations]
             [dapr.state :as state]
             [dapr.ui.events :as events]
             [dapr.ui.views :as views]
@@ -33,6 +34,10 @@
     ;; then becomes the system of record) and persist the import.
     (when (and (empty? (cache/libraries (d/db conn))) (.exists (io/file legacy)))
       (cache/migrate-from-edn! conn (store/load! legacy))
+      (cache/snapshot! conn path))
+    ;; Run any pending DB migrations; a non-empty result means at least one ran
+    ;; and the new state must be persisted.
+    (when (seq (migrations/run-migrations! conn))
       (cache/snapshot! conn path))
     {:conn conn :path path}))
 
