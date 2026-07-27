@@ -2,8 +2,9 @@ name: Integration
 
 # Integration tests against live external services (clojure -M:integration). Each
 # test's :once fixture starts its backend with Testcontainers, so the job only
-# needs Docker (present on ubuntu-latest) — no manual service setup. Tests skip
-# when Docker is unavailable.
+# needs Docker — no manual service setup. Docker is present on ubuntu-latest; the
+# macOS and Windows runners have no usable Docker daemon, so tests there skip
+# gracefully (they skip whenever Docker is unavailable).
 
 on:
   pull_request:
@@ -12,7 +13,11 @@ on:
 
 jobs:
   integration:
-    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
     steps:
       - name: Checkout
         uses: actions/checkout@v7
@@ -35,8 +40,8 @@ jobs:
             ~/.m2/repository
             ~/.gitlibs
             .cpcache
-          key: cljdeps-${{ hashFiles('deps.edn') }}
-          restore-keys: cljdeps-
+          key: cljdeps-${{ matrix.os }}-${{ hashFiles('deps.edn') }}
+          restore-keys: cljdeps-${{ matrix.os }}-
 
       - name: Run integration tests
         run: clojure -M:integration

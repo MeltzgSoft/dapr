@@ -47,13 +47,10 @@
 
 (defn- with-samba
   "Once-per-namespace fixture: start the Samba container, run the tests, stop it.
-  If Docker is unavailable the container stays nil and every test skips."
+  No graceful skip — if the container can't start (e.g. Docker unavailable), the
+  exception propagates and the namespace's tests fail."
   [run-tests]
-  (let [c (try (start-samba!)
-               (catch Throwable e
-                 (println "  (skipping SMB integration tests — Docker unavailable:"
-                          (.getMessage e) ")")
-                 nil))]
+  (let [c (start-samba!)]
     (reset! container c)
     (try
       (run-tests)
