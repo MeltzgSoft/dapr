@@ -92,13 +92,28 @@ sudo launchctl bootout system /System/Library/LaunchDaemons/com.apple.smbd.plist
 sudo "$SMBD" -D
 
 # Wait for the listener before handing off to the tests.
+listening=
 for _ in $(seq 1 30); do
-  if nc -z localhost 445; then
-    echo "Samba is listening on 445"
+  if nc -z localhost 445; then listening=1; echo "Samba is listening on 445"; break; fi
+  sleep 1
+done
+if [ -z "$listening" ]; then
+  echo "Samba did not start listening on 445" >&2
+  cat "$STATE"/log.* 2>/dev/null >&2 || true
+  exit 1
+fi
+
+# Warm up the share-enumeration RPC (srvsvc). Samba 4.x spawns that helper on
+# demand, and the first client connection can race it ("No process is on the
+# other end of the pipe"); listing shares here readies it before the tests run.
+SMBCLIENT="$PREFIX/bin/smbclient"
+for _ in $(seq 1 20); do
+  if "$SMBCLIENT" -L //127.0.0.1 -U "dapr%Secretpass1!" >/dev/null 2>&1; then
+    echo "share enumeration RPC is ready"
     exit 0
   fi
   sleep 1
 done
-echo "Samba did not start listening on 445" >&2
+echo "share enumeration RPC did not become ready" >&2
 cat "$STATE"/log.* 2>/dev/null >&2 || true
 exit 1
