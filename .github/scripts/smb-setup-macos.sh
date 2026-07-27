@@ -14,15 +14,23 @@ set -euo pipefail
 brew install samba
 
 PREFIX="$(brew --prefix samba)"
-SMBD="$PREFIX/sbin/samba-dot-org-smbd"      # Homebrew renames smbd to avoid /usr/sbin/smbd
+# Homebrew renames smbd to avoid clashing with /usr/sbin/smbd; fall back if not.
+SMBD="$PREFIX/sbin/samba-dot-org-smbd"
+[ -x "$SMBD" ] || SMBD="$(command -v samba-dot-org-smbd || true)"
+[ -x "$SMBD" ] || SMBD="$PREFIX/sbin/smbd"
 SMBPASSWD="$PREFIX/bin/smbpasswd"
 
 ROOT="$RUNNER_TEMP/smb"
 MUSIC="$ROOT/music"
 PRIVATE="$ROOT/private"
-CONF="$ROOT/smb.conf"
 mkdir -p "$MUSIC" "$PRIVATE"
 chmod 0777 "$MUSIC" "$PRIVATE"
+
+# smbpasswd has no --configfile flag, so write smb.conf to Samba's compiled-in
+# default path; every tool (smbpasswd, smbd) then reads it without a flag.
+CONF="$("$SMBD" -b 2>/dev/null | awk -F': *' '/CONFIGFILE/ {print $2; exit}')"
+CONF="${CONF:-$PREFIX/etc/smb.conf}"
+sudo mkdir -p "$(dirname "$CONF")"
 
 # Samba maps the SMB login to a unix account, so dapr must exist (its macOS
 # password is irrelevant — Samba authenticates against its own passdb below).
@@ -31,7 +39,7 @@ if ! id dapr >/dev/null 2>&1; then
 fi
 
 # Keep all Samba state under $ROOT so nothing needs pre-existing system paths.
-cat > "$CONF" <<EOF
+sudo tee "$CONF" >/dev/null <<EOF
 [global]
   server min protocol = SMB2
   map to guest = never
@@ -56,14 +64,15 @@ cat > "$CONF" <<EOF
   valid users = dapr
 EOF
 
-# Set dapr's Samba (NT-hash) password in the passdb.
-printf 'Secretpass1!\nSecretpass1!\n' | sudo "$SMBPASSWD" --configfile="$CONF" -a -s dapr
+# Set dapr's Samba (NT-hash) password in the passdb (reads $CONF from its default
+# path; smbpasswd has no config-file flag).
+printf 'Secretpass1!\nSecretpass1!\n' | sudo "$SMBPASSWD" -a -s dapr
 
 # Free port 445 by stopping macOS's built-in smbd, then start our Samba on it.
 sudo launchctl bootout system /System/Library/LaunchDaemons/com.apple.smbd.plist 2>/dev/null \
   || sudo launchctl unload -w /System/Library/LaunchDaemons/com.apple.smbd.plist 2>/dev/null \
   || true
-sudo "$SMBD" --configfile="$CONF" -D
+sudo "$SMBD" -D
 
 # Wait for the listener before handing off to the tests.
 for _ in $(seq 1 30); do
