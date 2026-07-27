@@ -1,17 +1,17 @@
 (ns dapr.db.migrations
   "Named, run-once data migrations for the cache DB (dapr.db.cache).
 
-  Each migration has a stable `:id` (a keyword) and a `:migrate` fn of the
-  DataScript `conn`. The DB records every applied migration as its own entity (a
-  migration-info collection: :migration/id, :migration/applied-at), so `applied-ids`
-  is the set of migrations already run. On startup `run-migrations!` applies every
-  registered migration whose id is not yet in that set, in registry (vector) order,
-  recording each as it goes.
+  Each migration is a map `{:migration/id <keyword> :migration/migrate <fn of conn>}`;
+  the id is conventionally namespaced (e.g. `:migration/mtp-tag-sources`). The DB
+  records every applied migration as its own entity (a migration-info collection:
+  :migration/id, :migration/applied-at), so `applied-ids` is the set of migrations
+  already run. On startup `run-migrations!` applies every registered migration whose
+  id is not yet in that set, in registry (vector) order, recording each as it goes.
 
   Migrations are keyed by name, not by a hand-assigned version number: adding one is
-  just appending a `{:id … :migrate …}` entry, and two branches that each add a
-  migration never collide on a number (they append distinct ids). Registry order is
-  the application order.
+  just appending a `{:migration/id … :migration/migrate …}` entry, and two branches
+  that each add a migration never collide on a number (they append distinct ids).
+  Registry order is the application order.
 
   This is distinct from `dapr.db.cache/snapshot-version`, which versions the on-disk
   EDN *shape* (an unreadable/old snapshot is discarded). Migrations track *data*
@@ -25,15 +25,16 @@
   (:require [datascript.core :as d]))
 
 (def registry
-  "Ordered migrations, each {:id <keyword> :migrate <fn of conn>}. Ids must be
-  distinct keywords; `run-migrations!` applies, in vector order, any whose id is not
-  yet recorded. Empty until a migration is registered."
+  "Ordered migrations, each {:migration/id <keyword> :migration/migrate <fn of conn>}.
+  Ids must be distinct keywords, conventionally namespaced (e.g.
+  `:migration/mtp-tag-sources`); `run-migrations!` applies, in vector order, any whose
+  id is not yet recorded. Empty until a migration is registered."
   [])
 
 (defn- valid-registry?
-  "True when every migration has a keyword :id and the ids are distinct."
+  "True when every migration has a keyword :migration/id and the ids are distinct."
   [migrations]
-  (let [ids (map :id migrations)]
+  (let [ids (map :migration/id migrations)]
     (and (every? keyword? ids)
          (= (count ids) (count (distinct ids))))))
 
@@ -43,15 +44,16 @@
   (set (d/q '[:find [?id ...] :where [_ :migration/id ?id]] db)))
 
 (defn applied
-  "Every applied migration as {:id :applied-at}, in application order. Ordered by
-  entity id (assigned in ascending transaction order), so it is stable even when two
-  migrations recorded in the same millisecond share an :applied-at timestamp."
+  "Every applied migration as {:migration/id :migration/applied-at}, in application
+  order. Ordered by entity id (assigned in ascending transaction order), so it is
+  stable even when two migrations recorded in the same millisecond share an
+  :migration/applied-at timestamp."
   [db]
   (->> (d/q '[:find [(pull ?e [:db/id :migration/id :migration/applied-at]) ...]
               :where [?e :migration/id]]
             db)
        (sort-by :db/id)
-       (mapv (fn [m] {:id (:migration/id m) :applied-at (:migration/applied-at m)}))))
+       (mapv #(dissoc % :db/id))))
 
 (defn record-applied!
   "Record migration `id` as applied, stamped with the current time. Used both by
@@ -70,10 +72,10 @@
   ([conn migrations]
    (when-not (valid-registry? migrations)
      (throw (ex-info "Invalid migration registry: ids must be distinct keywords"
-                     {:ids (map :id migrations)})))
+                     {:ids (map :migration/id migrations)})))
    (let [done    (applied-ids (d/db conn))
-         pending (remove #(contains? done (:id %)) migrations)]
-     (doseq [{:keys [id migrate]} pending]
+         pending (remove #(contains? done (:migration/id %)) migrations)]
+     (doseq [{:migration/keys [id migrate]} pending]
        (migrate conn)
        (record-applied! conn id))
-     (mapv :id pending))))
+     (mapv :migration/id pending))))

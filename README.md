@@ -80,8 +80,8 @@ of record for libraries live in a DataScript DB snapshotted to `…/dapr/cache.e
 ### Database migrations
 
 The cache DB evolves through **named, run-once migrations** in `dapr.db.migrations`.
-Each is `{:id <keyword> :migrate <fn of conn>}`; the DB records every applied
-migration (`:migration/id`), and on startup `run-migrations!` (called from the
+Each is `{:migration/id <keyword> :migration/migrate <fn of conn>}`; the DB records
+every applied migration (`:migration/id`), and on startup `run-migrations!` (called from the
 `:dapr/cache` component) applies any whose id is **not yet recorded**, in registry
 order, then snapshots. Migrations are keyed by name, **not a version number** — so
 adding one never means picking "the next number," and two branches can each add a
@@ -93,8 +93,9 @@ To add one:
    makes its change by querying then transacting. Make it **idempotent /
    re-runnable**: it's recorded only after it returns, so one that throws is retried
    next startup.
-2. **Append it to `registry`** with a fresh, descriptive keyword `:id`. Vector order
-   is the order migrations run.
+2. **Append it to `registry`** with a fresh, descriptive `:migration/id` — a keyword,
+   conventionally namespaced (e.g. `:migration/drop-blank-albums`). Vector order is
+   the order migrations run.
 3. **Add a test** in `dapr.db.migrations-test` (see the `marker-migration` helper for
    the framework, or drive the real `registry` end-to-end).
 
@@ -109,7 +110,8 @@ To add one:
 
 (def registry
   [;; …existing migrations…
-   {:id :drop-blank-albums :migrate migrate-drop-blank-albums!}]) ; append here
+   {:migration/id :migration/drop-blank-albums
+    :migration/migrate migrate-drop-blank-albums!}]) ; append here
 ```
 
 This is **data** migration only. It's separate from `dapr.db.cache/snapshot-version`,

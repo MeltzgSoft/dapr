@@ -5,10 +5,10 @@
             [datascript.core :as d]))
 
 (defn- marker-migration
-  "A migration whose :migrate transacts a marker fact so a test can see it ran."
+  "A migration whose :migration/migrate transacts a marker fact so a test can see it ran."
   [id]
-  {:id      id
-   :migrate (fn [conn] (d/transact! conn [{:marker/id id}]))})
+  {:migration/id      id
+   :migration/migrate (fn [conn] (d/transact! conn [{:marker/id id}]))})
 
 (defn- markers
   "The set of :marker/id facts the marker-migrations left behind."
@@ -17,31 +17,31 @@
 
 (deftest run-migrations-applies-pending-in-registry-order-test
   (let [conn (cache/empty-conn)
-        reg  [(marker-migration :a) (marker-migration :b)]]
+        reg  [(marker-migration :migration/a) (marker-migration :migration/b)]]
     (testing "a fresh DB runs every migration, in registry order, and records each id"
-      (is (= [:a :b] (migrations/run-migrations! conn reg)))
-      (is (= #{:a :b} (markers (d/db conn))))
-      (is (= #{:a :b} (migrations/applied-ids (d/db conn))))
-      (is (= [:a :b] (map :id (migrations/applied (d/db conn))))))
+      (is (= [:migration/a :migration/b] (migrations/run-migrations! conn reg)))
+      (is (= #{:migration/a :migration/b} (markers (d/db conn))))
+      (is (= #{:migration/a :migration/b} (migrations/applied-ids (d/db conn))))
+      (is (= [:migration/a :migration/b] (map :migration/id (migrations/applied (d/db conn))))))
     (testing "recorded migrations carry an applied-at timestamp"
-      (is (every? inst? (map :applied-at (migrations/applied (d/db conn))))))
+      (is (every? inst? (map :migration/applied-at (migrations/applied (d/db conn))))))
     (testing "re-running the same registry is a no-op"
       (is (= [] (migrations/run-migrations! conn reg)))
-      (is (= #{:a :b} (migrations/applied-ids (d/db conn)))))))
+      (is (= #{:migration/a :migration/b} (migrations/applied-ids (d/db conn)))))))
 
 (deftest run-migrations-only-runs-unapplied-test
   (let [conn (cache/empty-conn)]
-    (migrations/run-migrations! conn [(marker-migration :a) (marker-migration :b)])
+    (migrations/run-migrations! conn [(marker-migration :migration/a) (marker-migration :migration/b)])
     (testing "appending a new migration runs only the not-yet-applied one"
       (let [ran (atom [])
-            reg [(marker-migration :a)
-                 (marker-migration :b)
-                 {:id      :c
-                  :migrate (fn [conn] (swap! ran conj :c)
-                             (d/transact! conn [{:marker/id :c}]))}]]
-        (is (= [:c] (migrations/run-migrations! conn reg)))
-        (is (= [:c] @ran) "already-applied ids were not re-run")
-        (is (= #{:a :b :c} (migrations/applied-ids (d/db conn))))))))
+            reg [(marker-migration :migration/a)
+                 (marker-migration :migration/b)
+                 {:migration/id      :migration/c
+                  :migration/migrate (fn [conn] (swap! ran conj :migration/c)
+                                       (d/transact! conn [{:marker/id :migration/c}]))}]]
+        (is (= [:migration/c] (migrations/run-migrations! conn reg)))
+        (is (= [:migration/c] @ran) "already-applied ids were not re-run")
+        (is (= #{:migration/a :migration/b :migration/c} (migrations/applied-ids (d/db conn))))))))
 
 (deftest applied-ids-empty-on-fresh-db-test
   (is (= #{} (migrations/applied-ids (d/db (cache/empty-conn))))))
@@ -50,18 +50,19 @@
   (let [conn (cache/empty-conn)]
     (testing "duplicate ids are rejected"
       (is (thrown? clojure.lang.ExceptionInfo
-                   (migrations/run-migrations! conn [(marker-migration :a) (marker-migration :a)]))))
+                   (migrations/run-migrations! conn [(marker-migration :migration/a)
+                                                     (marker-migration :migration/a)]))))
     (testing "a non-keyword id is rejected"
       (is (thrown? clojure.lang.ExceptionInfo
-                   (migrations/run-migrations! conn [{:id "a" :migrate identity}]))))))
+                   (migrations/run-migrations! conn [{:migration/id "a" :migration/migrate identity}]))))))
 
 (deftest record-applied-seeds-a-baseline-test
   (let [conn (cache/empty-conn)]
     (testing "recording an id without running it marks that migration applied"
-      (migrations/record-applied! conn :seeded)
-      (is (= #{:seeded} (migrations/applied-ids (d/db conn))))
+      (migrations/record-applied! conn :migration/seeded)
+      (is (= #{:migration/seeded} (migrations/applied-ids (d/db conn))))
       ;; a registry whose only migration is that id is then a no-op
       (let [ran (atom false)]
         (is (= [] (migrations/run-migrations!
-                   conn [{:id :seeded :migrate (fn [_] (reset! ran true))}])))
+                   conn [{:migration/id :migration/seeded :migration/migrate (fn [_] (reset! ran true))}])))
         (is (false? @ran))))))
