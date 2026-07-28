@@ -2,32 +2,44 @@
 
 A Clojure desktop application for selectively syncing music libraries between
 filesystems. A *library* is a **named, persistent collection of root
-directories**, each addressed by a URI. Dapr supports two URI schemes:
+directories**, each addressed by a URI. Dapr supports three URI schemes:
 
 - `file://` — local directories, mounted drives, NAS
+- `smb://`  — network shares, via `jcifs-ng`; per-host credentials live in the
+  OS secure keystore, never in the library config
 - `mtp://`  — phones / DAPs / USB players, via
   [melt-jfs](https://github.com/meltzg/melt-jfs), a cross-platform `java.nio`
   FileSystem provider for MTP devices
 
-The key design lever is that **both schemes are exposed as
-`java.nio.file.FileSystem` providers**, so the entire sync engine is written
+The key design lever is that **every scheme is exposed as a
+`java.nio.file.FileSystem` provider**, so the entire sync engine is written
 against `java.nio.file.*` and never special-cases the backend. The only
-MTP-specific code is *device discovery* (`dapr.fs.mtp`), loaded lazily so the
-default build, tests, and lint need neither the melt-jfs jar nor native
-libraries.
+scheme-specific code lives under `dapr.device.*` — device discovery,
+availability probing, and (where a backend allows it) embedded-tag reading —
+loaded so the default build, tests, and lint need neither native libraries nor
+a live device.
 
 ## What it does
 
-1. **Manage libraries** — create named libraries, each a set of `file://`/`mtp://`
-   root directories (e.g. a phone's internal + SD storage). Libraries persist
-   across sessions as EDN.
+1. **Manage libraries** — create named libraries, each a set of
+   `file://`/`smb://`/`mtp://` root directories (e.g. a phone's internal + SD
+   storage). Libraries persist across sessions as EDN; unavailable libraries
+   (device unplugged, share unreachable) are greyed out.
 2. **Pick a source and a sink** library.
-3. **Choose tracks** — the source's tracks are listed; those already on the sink
-   are pre-selected. Check/uncheck tracks. A **capacity meter** (free space
-   across the sink's distinct devices, plus space reclaimed by deletions) blocks
+3. **Choose tracks** — the source's tracks are listed in a sortable table with
+   an iTunes-style artist/album column browser; those already on the sink are
+   pre-selected. Check/uncheck tracks. A **capacity meter** (free space across
+   the sink's distinct devices, plus space reclaimed by deletions) blocks
    selecting more than the sink can hold.
 4. **Preview & sync** — Dapr computes an **add / delete** plan that makes the
    sink hold exactly the selected tracks, then applies it.
+
+The table shows each track's tags — disc/track number, title, duration,
+artist, album, genre. Tags come from the file's **own embedded metadata** where
+the backend supports reading it (`file://` via jaudiotagger, `mtp://` via the
+device index or a ranged header read — see [`docs/mtp-tags.md`](docs/mtp-tags.md)),
+falling back to path-derived values otherwise. A **dark/light/system theme** and
+an on-demand **live log window** round out the UI.
 
 Key behaviours (current defaults):
 
@@ -52,25 +64,41 @@ src/dapr/
   domain/
     library.clj   pure  libraries, tracks, catalogs, identity, audio filter
     capacity.clj  pure  budget / used / would-fit? math
-    plan.clj      pure  selection-plan -> [add/delete/skip/blocked]
+    plan.clj      pure  selection-plan -> [add/delete/add-to-source/skip/blocked]
+    tags.clj      pure  path-derived artist/album/title fallback
   db/
     cache.clj      I/O   DataScript cache + EDN snapshot (system of record)
     migrations.clj I/O   named run-once DB migrations (see "Database migrations")
+  device/          per-scheme behaviour, keyed on the root URI scheme
+    format.clj    pure  scheme multimethods (device-type, labels, supported?)
+    fs.clj        I/O   root-path!/dir-children!/available? multimethods
+    tag.clj       I/O   tags! multimethod (embedded vs path-derived); default is path
+    events.clj    I/O   folder-browser event multimethods (setup/connect/list)
+    views.clj     pure  device-specific view extension points + shared browser
+    file/ smb/ mtp/    each: fs, format, events, views (+ tag for file & mtp)
   fs/
-    nio.clj       I/O   catalog!, copy!/delete!, capacity & device queries
-    mtp.clj       I/O   MTP device discovery via melt-jfs (lazy, optional)
+    nio.clj        I/O   catalog!, copy!/delete!, capacity & device queries
+    credentials.clj I/O  SMB per-host credentials in the OS secure keystore
+    paths.clj      I/O   config-dir / user-home resolution
   library/
-    store.clj     I/O   load!/save! libraries as EDN under the config dir
-  sync.clj        I/O   build-plan! + execute-plan! with progress callback
-  state.clj       pure  state-transition fns over a single state map
+    store.clj      I/O   load!/save! libraries as EDN under the config dir
+  sync.clj         I/O   build-plan! + execute-plan! with progress callback
+  log.clj          I/O   Telemere handlers: rolling log file + live-window buffer
+  state.clj        pure  state-transition fns over a single state map
   ui/
-    format.clj    pure  formatting + derived predicates (no JavaFX)
-    views.clj     pure  cljfx view descriptions (data)
-    events.clj    I/O   event handlers: swap! state, scans/copies, persistence
-  system.clj      Integrant components: store, state atom, cljfx renderer
-  main.clj        entry point
-resources/config.edn  Integrant system map
+    format.clj     pure  formatting + derived predicates (no JavaFX)
+    views.clj      pure  cljfx view descriptions (data)
+    events.clj     I/O   event handlers: swap! state, scans/copies, persistence
+  system.clj       Integrant components: cache, state atom, log, devices, renderer
+  main.clj         entry point
+resources/{config.edn, dark.css, light.css}  Integrant system map + themes
 ```
+
+Device discovery/tag reading is loaded through the multimethods above, so the
+generic engine in `dapr.fs.nio` never names a scheme. `dapr.device.tag/tags!`
+is the seam for tags: `file://` reads embedded tags via jaudiotagger, `mtp://`
+via the melt-jfs `audio`/`mtp` NIO attribute views, and any scheme without a
+reader (e.g. `smb://`) falls back to the path-derived default.
 
 Libraries are persisted at `$XDG_CONFIG_HOME/dapr/libraries.edn` (fallback
 `~/.config/dapr/…`, `%APPDATA%\dapr\…` on Windows). The scan cache and the system
@@ -123,8 +151,10 @@ rebuilt from scratch. Inspect what has run with `applied-ids` / `applied`.
 
 - JDK 21+ (developed on JDK 25). JavaFX is pulled in explicitly (`org.openjfx`
   `:linux` classifier) because modern JDKs no longer bundle it.
-- For `mtp://` support: the [melt-jfs](https://github.com/meltzg/melt-jfs) jar
-  and native MTP access (libmtp on Linux/macOS, WPD on Windows).
+- For `mtp://` support: native MTP access (libmtp on Linux/macOS, WPD on
+  Windows), reached via [melt-jfs](https://github.com/meltzg/melt-jfs).
+- For `smb://` support: a secure keystore for per-host credentials — Secret
+  Service/KWallet (Linux), Keychain (macOS), or Credential Manager (Windows).
 
 ## Usage
 
@@ -175,4 +205,4 @@ clojure -M:dev
 - Content-hash or tag-based track identity (beyond rel+size) — would re-enable
   efficient *move* detection for files reorganised into a new relative path
 - Per-device bin-packing for adds (beyond first-fit placement)
-- Virtualized track table for very large libraries
+- Embedded-tag reading over `smb://` (today its tags are path-derived)

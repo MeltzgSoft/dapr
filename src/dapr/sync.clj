@@ -43,12 +43,16 @@
     (case (:op a)
       :add    (let [t (get source-catalog (:key a))]
                 (cache/add-presence! conn sink-id
-                                     {:rel    (get-in a [:target :rel])
-                                      :size   (:size a)
-                                      :root   (get-in a [:target :root])
-                                      :artist (:artist t)
-                                      :album  (:album t)
-                                      :title  (:title t)}))
+                                     {:rel             (get-in a [:target :rel])
+                                      :size            (:size a)
+                                      :root            (get-in a [:target :root])
+                                      :artist          (:artist t)
+                                      :album           (:album t)
+                                      :title           (:title t)
+                                      :genre           (:genre t)
+                                      :track-number    (:track-number t)
+                                      :disc-number     (:disc-number t)
+                                      :duration-millis (:duration-millis t)}))
       :delete (cache/remove-presence! conn sink-id (get-in a [:at :rel]) (:size a))
       nil)))
 
@@ -72,12 +76,16 @@
   (doseq [a actions :when (= :add-to-source (:op a))]
     (let [t (get sink-catalog (:key a))]
       (cache/add-presence! conn source-id
-                           {:rel    (get-in a [:target :rel])
-                            :size   (:size a)
-                            :root   (get-in a [:target :root])
-                            :artist (:artist t)
-                            :album  (:album t)
-                            :title  (:title t)}))))
+                           {:rel             (get-in a [:target :rel])
+                            :size            (:size a)
+                            :root            (get-in a [:target :root])
+                            :artist          (:artist t)
+                            :album           (:album t)
+                            :title           (:title t)
+                            :genre           (:genre t)
+                            :track-number    (:track-number t)
+                            :disc-number     (:disc-number t)
+                            :duration-millis (:duration-millis t)}))))
 
 (defn library-free!
   "Total usable bytes across the distinct devices backing a library's roots."

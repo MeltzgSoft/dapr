@@ -6,7 +6,7 @@
   ;; MTP device support via melt-jfs (Maven Central). Needs native libmtp/WPD
   ;; access at runtime, enabled by --enable-native-access=ALL-UNNAMED in the
   ;; :run and :dev aliases.
-  io.github.meltzg/melt-jfs {:mvn/version "0.1.1"}
+  io.github.meltzg/melt-jfs {:mvn/version "0.2.0"}
   ;; SMB/CIFS share support. smb-nio registers a java.nio "smb://"
   ;; FileSystemProvider (jcifs-ng backed), so the sync engine reaches SMB shares
   ;; through the same NIO code as file:// and mtp://. java-keyring stores share

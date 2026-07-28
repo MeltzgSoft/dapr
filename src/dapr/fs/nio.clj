@@ -6,10 +6,12 @@
   (:require [clojure.string :as str]
             [dapr.device.file.fs :as file-fs]
             ;; Loaded for their tags! method registrations; file:// reads embedded
-            ;; tags, the rest fall back to dapr.device.tag's path-based default.
+            ;; tags, mtp:// reads the device's own track metadata, and the rest
+            ;; fall back to dapr.device.tag's path-based default.
             [dapr.device.file.tag]
             [dapr.device.fs :as device-fs]
             [dapr.device.mtp.fs]
+            [dapr.device.mtp.tag]
             [dapr.device.smb.fs]
             [dapr.device.tag :as device-tag]
             [dapr.domain.library :as lib])
@@ -50,7 +52,8 @@
   [known {:keys [rel size mtime] :as m} ^Path p]
   (let [cached (when known (known rel size))]
     (if (and cached (:source cached) (= mtime (:mtime cached)))
-      (select-keys cached [:artist :album :title :source])
+      (select-keys cached [:artist :album :title :genre
+                           :track-number :disc-number :duration-millis :source])
       (device-tag/tags! m p))))
 
 (defn- audio-track

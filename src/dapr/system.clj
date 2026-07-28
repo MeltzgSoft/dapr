@@ -35,8 +35,7 @@
     (when (and (empty? (cache/libraries (d/db conn))) (.exists (io/file legacy)))
       (cache/migrate-from-edn! conn (store/load! legacy))
       (cache/snapshot! conn path))
-    ;; Run any pending DB migrations; a non-empty result means at least one ran
-    ;; and the new state must be persisted.
+    ;; Run any pending DB migrations, persisting when one changed the DB.
     (when (seq (migrations/run-migrations! conn))
       (cache/snapshot! conn path))
     {:conn conn :path path}))

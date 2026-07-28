@@ -6,13 +6,11 @@
            (java.nio.file.attribute FileAttribute)))
 
 (deftest default-dispatch-test
-  (testing "smb:// and mtp:// roots fall back to path-derived tags, tagged :path"
+  (testing "schemes without a registered reader (smb://) fall back to path-derived
+            tags, tagged :path (mtp:// now has its own reader — see
+            dapr.device.mtp.tag-test)"
     (is (= {:artist "Artist" :album "Album" :title "Title" :source :path}
            (tag/tags! {:root "smb://host/share/Artist/Album/Title.mp3"
-                       :rel  "Artist/Album/Title.mp3"}
-                      nil)))
-    (is (= {:artist "Artist" :album "Album" :title "Title" :source :path}
-           (tag/tags! {:root "mtp://dev/Artist/Album/Title.mp3"
                        :rel  "Artist/Album/Title.mp3"}
                       nil)))))
 
@@ -31,7 +29,7 @@
 (deftest file-error-falls-back-test
   (testing "an Error from the tag reader (e.g. jaudiotagger StackOverflowError) is
             caught so one bad file can't abort the scan"
-    (with-redefs [dapr.device.file.tag/read-tag (fn [_] (throw (StackOverflowError.)))]
+    (with-redefs [dapr.device.file.tag/read-audio (fn [_] (throw (StackOverflowError.)))]
       (is (= {:artist "Artist" :album "Album" :title "Title" :source :path}
              (tag/tags! {:root "file:///x/Artist/Album/Title.mp3"
                          :rel  "Artist/Album/Title.mp3"}
