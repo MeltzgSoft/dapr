@@ -20,9 +20,12 @@ spikes have since been promoted to real features:
   two run-once migrations (`:migration/mtp-tag-sources`,
   `:migration/extended-tag-fields`) backfill existing caches. Verified on
   hardware (iRiver AK100_II, ~24 ms/track). See `docs/mtp-tags.md`.
-- **Spike 3 — SMB tags → in progress** on `spike/smb-tags`
-  ([PR #37](https://github.com/meltzg/dapr/pull/37)): a prototype for reading
-  embedded tags over SMB. Deliverable `docs/smb-tags.md` lives on that branch.
+- **Spike 3 — SMB tags → shipped** on `spike/smb-tags`
+  ([PR #37](https://github.com/meltzg/dapr/pull/37)). `dapr.device.smb.tag` reads
+  embedded tags over SMB via melt-jfs's ranged-read header parsers (no whole-file
+  transfer), mapping the full field set with per-field path fallback; a
+  `:migration/smb-tag-sources` migration backfills existing caches. See
+  `docs/smb-tags.md`.
 
 The detailed per-feature and per-spike records below are the durable build log,
 kept for context; the merge mechanics for the original stacked PRs (#22–#28) are
@@ -215,19 +218,33 @@ build behind `:log-open?` or coalesce append bursts.
 ---
 
 ## 3. `spike/smb-tags` — investigate SMB tag reading *(research)*
-Deliverable: `docs/smb-tags.md` (+ optional prototype). `jaudiotagger` reads only
-`java.io.File` (local default FS); smb:// currently falls back to path-derived
+Deliverable: `docs/smb-tags.md` (+ prototype). `jaudiotagger` reads only
+`java.io.File` (local default FS); smb:// previously fell back to path-derived
 tags via `device.tag`.
-- [ ] Evaluate: (a) NIO-stream to a temp file then read (simple, full read per
-      file); (b) jaudiotagger over a seekable channel/`RandomAccessFile`
-      (likely unsupported — jcifs `SmbFile` isn't a `File`); (c) read only the
-      ID3/Vorbis header bytes via NIO channel and parse minimally.
-- [ ] Recommend an approach + cost (SMB reads are the expensive path).
-- [ ] If viable, follow-up `feat/smb-tags` registers a `device.tag/tags!` method.
+- [x] Evaluate: (a) NIO-copy to a temp file then read (**whole-file transfer per
+      track — untenable at library scale**); (b) jaudiotagger over a seekable
+      channel (**ruled out** — jaudiotagger 3.0.1 has no channel/stream API);
+      (c) **ranged header parse — SHIPPED.** smb-nio's `SeekableByteChannel`
+      honours `position()`, and melt-jfs 0.2.0 ships device-agnostic header
+      parsers (`org.meltzg.fs.mtp.audio.AudioTagReaders` over a `RangedByteSource`,
+      zero MTP coupling) — which we own — so ranged parsing needed no custom code.
+- [x] Recommend an approach + cost: ship (c). A first scan reads only a few KB of
+      header per track (vs tens of MB for a whole FLAC under (a)); aac/wma and any
+      failure degrade to path tags. See `docs/smb-tags.md`.
+- [x] `dapr.device.smb.tag` registers `tags! :smb` — `channel-source` adapts an
+      smb-nio `SeekableByteChannel` to melt-jfs's `RangedByteSource`,
+      `audio-tags->tags` maps `AudioTags` → dapr's **full tag set**
+      (artist/album/title/genre/track/disc/duration, matching the file:// and
+      mtp:// readers) with per-field path fallback; loaded in `fs/nio`.
+- [x] Cache migration `:migration/smb-tag-sources` retracts `:track/tag-source`
+      from `:path`-cached tracks under `smb://` roots so the next scan re-reads
+      them through the new reader. Runs once via the applied-id gate.
 
-**Status:** 🔬 in progress on `spike/smb-tags`
-([PR #37](https://github.com/meltzg/dapr/pull/37)) — spike + prototype embedded
-tag reading over SMB. Deliverable `docs/smb-tags.md` on that branch.
+**Status:** ✅ **DONE** on `spike/smb-tags`
+([PR #37](https://github.com/meltzg/dapr/pull/37)), rebased onto the merged
+mtp-tags work. Reads real embedded tags over ranged reads with **no whole-file
+transfer**; the full field set threads through to the table columns. Unit +
+integration green; clj-kondo + cljfmt clean.
 
 ---
 
