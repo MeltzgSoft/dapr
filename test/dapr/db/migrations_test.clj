@@ -114,7 +114,7 @@
     (cache/replace-library-tracks! conn s [(track "s-path.flac" 4 :artist "S" :source :path
                                                   :root "smb://host/share/")])
     (testing "clears tag-source (any value) on file:// and mtp:// tracks so they re-read;
-              smb:// is left alone (path derivation gains no embedded fields)"
+              smb:// is left alone (handled by :migration/smb-tag-sources)"
       (is (= 3 (migrations/migrate-extended-tag-fields! conn)))
       (is (nil? (:source (get (cache/library-catalog (d/db conn) f) ["f-emb.flac" 1])))
           "file :embedded cleared")
@@ -127,18 +127,38 @@
     (testing "re-running finds nothing left to clear (run-once is enforced by the gate)"
       (is (= 0 (migrations/migrate-extended-tag-fields! conn))))))
 
+(deftest migrate-smb-tag-sources-test
+  (let [conn (cache/empty-conn)
+        f    (cache/upsert-library! conn {:name "F" :roots ["file:///r/"]})
+        s    (cache/upsert-library! conn {:name "S" :roots ["smb://host/Music/"]})]
+    (cache/replace-library-tracks! conn f [(track "f.mp3" 3 :artist "F" :source :path
+                                                  :root "file:///r/")])
+    (cache/replace-library-tracks! conn s [(track "song.flac" 1 :artist "Path" :source :path
+                                                  :root "smb://host/Music/")
+                                           (track "emb.flac" 2 :artist "Emb" :source :embedded
+                                                  :root "smb://host/Music/")])
+    (testing "clears :path tag-source only on smb-rooted tracks, so they re-read"
+      (is (= 1 (migrations/migrate-smb-tag-sources! conn)))
+      (let [cat-s (cache/library-catalog (d/db conn) s)
+            cat-f (cache/library-catalog (d/db conn) f)]
+        (is (nil? (:source (get cat-s ["song.flac" 1]))) "smb :path source cleared")
+        (is (= :embedded (:source (get cat-s ["emb.flac" 2]))) "smb :embedded left alone")
+        (is (= :path (:source (get cat-f ["f.mp3" 3]))) "file :path left alone")))
+    (testing "re-running finds nothing left to clear"
+      (is (= 0 (migrations/migrate-smb-tag-sources! conn))))))
+
 (deftest registry-runs-migrations-once-test
   (let [conn (cache/empty-conn)
         m    (cache/upsert-library! conn {:name "M" :roots ["mtp://dev/"]})]
     (cache/replace-library-tracks! conn m [(mtp-path-track "song.mp3" 1)])
-    (testing "running the real registry applies both migrations, in order, and records them"
-      (is (= [:migration/mtp-tag-sources :migration/extended-tag-fields]
+    (testing "running the real registry applies every migration, in order, and records them"
+      (is (= [:migration/mtp-tag-sources :migration/extended-tag-fields :migration/smb-tag-sources]
              (migrations/run-migrations! conn)))
       (is (nil? (:source (get (cache/library-catalog (d/db conn) m) ["song.mp3" 1]))))
-      (is (= #{:migration/mtp-tag-sources :migration/extended-tag-fields}
+      (is (= #{:migration/mtp-tag-sources :migration/extended-tag-fields :migration/smb-tag-sources}
              (migrations/applied-ids (d/db conn)))))
     (testing "a second run is a no-op — the applied-id set, not the fns, enforces once"
       (cache/replace-library-tracks! conn m [(mtp-path-track "song.mp3" 1)]) ; re-scan re-adds :path
       (is (= [] (migrations/run-migrations! conn)))
       (is (= :path (:source (get (cache/library-catalog (d/db conn) m) ["song.mp3" 1])))
-          "not re-cleared: both migrations already recorded"))))
+          "not re-cleared: the migrations are already recorded"))))

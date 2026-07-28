@@ -6,13 +6,15 @@
   (:require [clojure.string :as str]
             [dapr.device.file.fs :as file-fs]
             ;; Loaded for their tags! method registrations; file:// reads embedded
-            ;; tags, mtp:// reads the device's own track metadata, and the rest
-            ;; fall back to dapr.device.tag's path-based default.
+            ;; tags via jaudiotagger, mtp:// and smb:// read embedded tags over
+            ;; ranged reads, and the rest fall back to dapr.device.tag's path-based
+            ;; default.
             [dapr.device.file.tag]
             [dapr.device.fs :as device-fs]
             [dapr.device.mtp.fs]
             [dapr.device.mtp.tag]
             [dapr.device.smb.fs]
+            [dapr.device.smb.tag]
             [dapr.device.tag :as device-tag]
             [dapr.domain.library :as lib])
   (:import (java.nio.file CopyOption DirectoryStream FileStore

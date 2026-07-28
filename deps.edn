@@ -5,7 +5,11 @@
   integrant/integrant   {:mvn/version "1.0.1"}
   ;; MTP device support via melt-jfs (Maven Central). Needs native libmtp/WPD
   ;; access at runtime, enabled by --enable-native-access=ALL-UNNAMED in the
-  ;; :run and :dev aliases.
+  ;; :run and :dev aliases. 0.2.0 also ships device-agnostic audio-tag header
+  ;; parsers (org.meltzg.fs.mtp.audio.AudioTagReaders over a RangedByteSource);
+  ;; the smb:// reader backs one with a seekable channel to read embedded tags
+  ;; from a few KB of header rather than transferring whole files (see
+  ;; dapr.device.smb.tag).
   io.github.meltzg/melt-jfs {:mvn/version "0.2.0"}
   ;; SMB/CIFS share support. smb-nio registers a java.nio "smb://"
   ;; FileSystemProvider (jcifs-ng backed), so the sync engine reaches SMB shares
@@ -17,8 +21,9 @@
   ch.pontius.nio/smb-nio              {:mvn/version "0.13.0"}
   com.github.javakeyring/java-keyring {:mvn/version "1.0.4"}
   ;; Audio tag reading (ID3/Vorbis/MP4/etc.) for the local file:// device. Reads
-  ;; from a java.io.File, so it only applies to the default filesystem provider —
-  ;; smb:// and mtp:// tracks fall back to path-derived tags (see dapr.device.tag).
+  ;; from a java.io.File, so it only applies to the default filesystem provider;
+  ;; smb:// and mtp:// read embedded tags over ranged reads via melt-jfs instead
+  ;; (see dapr.device.smb.tag / dapr.device.mtp.tag / dapr.device.tag).
   net.jthink/jaudiotagger             {:mvn/version "3.0.1"}
   ;; In-memory Datalog DB (Clojars) used as the persisted scan cache and the
   ;; system of record for libraries. Snapshotted to an EDN file (see dapr.cache);
