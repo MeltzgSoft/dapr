@@ -147,8 +147,9 @@
 
 (defn- track-rows
   "Resolve the union of the source and sink catalogs into a sorted vector of row
-  maps for the track table, one per track: {:key :artist :album :title :size
-  :sink-rel :in-source? :on? :disable}. Rows sort by artist/album/title (the table
+  maps for the track table, one per track: {:key :disc-number :track-number :title
+  :duration-millis :artist :album :genre :size :sink-rel :in-source? :on? :disable}.
+  Rows sort by artist/album/title (the table
   lets the user re-sort by any column). Capacity is checked in constant time per
   row against the selection's remaining free bytes (computed once from :capacity),
   so this stays O(n) even for libraries of many thousands of tracks — see
@@ -171,19 +172,23 @@
                  (let [k          (:key t)
                        in-source? (contains? source-catalog k)
                        on?        (contains? selected k)]
-                   {:key        k
-                    :artist     (:artist t)
-                    :album      (:album t)
-                    :title      (:title t)
-                    :size       (:size t)
-                    :sink-rel   (:rel (get sink-catalog k))
-                    :in-source? in-source?
-                    :on?        (if (and (not in-source?) locked?) true on?)
-                    :disable    (cond
-                                  (not in-source?) locked?
-                                  on?              false
-                                  :else            (not (cap/row-fits?
-                                                         k (:size t) selected sink-catalog free)))}))))))
+                   {:key             k
+                    :disc-number     (:disc-number t)
+                    :track-number    (:track-number t)
+                    :title           (:title t)
+                    :duration-millis (:duration-millis t)
+                    :artist          (:artist t)
+                    :album           (:album t)
+                    :genre           (:genre t)
+                    :size            (:size t)
+                    :sink-rel        (:rel (get sink-catalog k))
+                    :in-source?      in-source?
+                    :on?             (if (and (not in-source?) locked?) true on?)
+                    :disable         (cond
+                                       (not in-source?) locked?
+                                       on?              false
+                                       :else            (not (cap/row-fits?
+                                                              k (:size t) selected sink-catalog free)))}))))))
 
 (defn- check-column
   "Leading selection column: a fixed-width checkbox per row, disabled when adding
@@ -291,9 +296,13 @@
    :column-resize-policy :constrained
    :items                (track-rows state)
    :columns              [(check-column)
+                          (track-column "Disc" :disc-number 55 #(some-> % str))
+                          (track-column "Track" :track-number 55 #(some-> % str))
+                          (track-column "Title" :title 200 identity)
+                          (track-column "Duration" :duration-millis 80 fmt/duration-mmss)
                           (track-column "Artist" :artist 160 identity)
                           (track-column "Album" :album 160 identity)
-                          (track-column "Title" :title 200 identity)
+                          (track-column "Genre" :genre 120 identity)
                           (track-column "Size" :size 90 #(when (some? %) (fmt/human-bytes %)))
                           (track-column "On sink" :sink-rel 160 identity)]})
 

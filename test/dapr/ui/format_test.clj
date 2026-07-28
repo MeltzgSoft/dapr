@@ -27,6 +27,18 @@
   (testing "nil is treated as zero"
     (is (= "0 B" (fmt/human-bytes nil)))))
 
+(deftest duration-mmss-test
+  (testing "millis format as m:ss with zero-padded seconds"
+    (is (= "3:30" (fmt/duration-mmss 210000)))
+    (is (= "0:05" (fmt/duration-mmss 5000)))
+    (is (= "0:00" (fmt/duration-mmss 0)))
+    (is (= "4:01" (fmt/duration-mmss 241000))))
+  (testing "seconds truncate (no rounding) and minutes are uncapped"
+    (is (= "0:03" (fmt/duration-mmss 3999)))
+    (is (= "72:14" (fmt/duration-mmss (+ (* 72 60 1000) 14000)))))
+  (testing "nil (unknown duration) is blank"
+    (is (= "" (fmt/duration-mmss nil)))))
+
 (deftest status-text-test
   (testing "maps known statuses"
     (is (= "Idle" (fmt/status-text :idle)))

@@ -52,6 +52,16 @@
   [xs]
   (->> xs (remove nil?) distinct sort vec))
 
+(defn duration-mmss
+  "Format a millisecond duration as minutes:seconds (m:ss, zero-padded seconds),
+  e.g. 210000 -> \"3:30\". nil (unknown duration) formats as blank. Minutes are not
+  capped, so a track over an hour reads e.g. \"72:14\"."
+  [ms]
+  (if (some? ms)
+    (let [secs (quot (long ms) 1000)]
+      (format "%d:%02d" (quot secs 60) (rem secs 60)))
+    ""))
+
 (defn sort-key
   "Case-insensitive sort key for a track field: strings are lowercased so sorting
   ignores case; non-strings (numbers) and nil pass through unchanged (nil sorts
