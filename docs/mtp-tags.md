@@ -152,7 +152,11 @@ resolves every field it can, with `mtp` and path still behind it:
   matters: an ungated re-run would re-clear genuinely tagless files (device reported
   nothing) every launch, re-paying the device read each time — the rejected option
   (b). Option (c), do nothing, would have left existing libraries on path tags until
-  an mtime change.
+  an mtime change. A sibling migration, **`:migration/extended-tag-fields`**, does the
+  same for the extended fields (genre/track/disc/duration): it clears the recorded
+  source on file:// and mtp:// tracks — at any value, since embedded-sourced tracks
+  also predate the new fields — so the next scan backfills them through the richer
+  readers.
 
 ## Verification status
 
