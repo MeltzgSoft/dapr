@@ -61,8 +61,8 @@
   through the now-richer reader and backfills those fields. dapr.fs.nio/track-tags!
   reuses any entry that has a recorded source and an unchanged mtime, so without this
   an already-cached track keeps its old field-less tags until its mtime changes.
-  smb:// roots are skipped — their tags are pure path derivation, so a re-read gains
-  none of the new fields.
+  smb:// roots are skipped here — they arrived with their own reader later and are
+  handled by :migration/smb-tag-sources.
 
   Retracts the source at whatever value it holds (:embedded or :path), unlike
   migrate-mtp-tag-sources! which targets only :path — the missing fields affect
@@ -83,13 +83,43 @@
       (d/transact! conn (vec tx)))
     (count tx)))
 
+(defn migrate-smb-tag-sources!
+  "The :migration/smb-tag-sources migration. For the arrival of the smb:// tag reader
+  (dapr.device.smb.tag): retract :track/tag-source from every track cached
+  path-derived (:source :path) that has a presence under an smb:// root, so the next
+  scan re-reads it through the ranged-read reader instead of reusing its stale path
+  tags. SMB tracks scanned before the reader landed were cached :source :path with an
+  unchanged mtime (there was no embedded smb reader), and dapr.fs.nio/track-tags!
+  reuses any entry that has a recorded source — so without this they'd keep path tags
+  until their mtime changed. Only :path is targeted: every pre-reader smb track was
+  :path, so there are no embedded-sourced ones to backfill (unlike file/mtp, handled
+  by :migration/extended-tag-fields).
+
+  Run exactly once via the applied-id gate (`run-migrations!`), so it can't re-clear
+  the source of genuinely tagless smb files (an unsupported format or an untagged
+  file, left at :path by the re-read) and force a wasted read every startup. Returns
+  the number of tracks cleared (may be 0). Retract-only, no I/O."
+  [conn]
+  (let [eids (->> (d/q '[:find ?t ?root
+                         :where
+                         [?t :track/tag-source :path]
+                         [?p :presence/track ?t]
+                         [?p :presence/root ?root]]
+                       (d/db conn))
+                  (into #{} (comp (filter (fn [[_ root]] (= :smb (device/device-type root))))
+                                  (map first))))]
+    (when (seq eids)
+      (d/transact! conn (mapv (fn [t] [:db/retract t :track/tag-source :path]) eids)))
+    (count eids)))
+
 (def registry
   "Ordered migrations, each {:migration/id <keyword> :migration/migrate <fn of conn>}.
   Ids must be distinct keywords, conventionally namespaced (e.g.
   `:migration/mtp-tag-sources`); `run-migrations!` applies, in vector order, any whose
   id is not yet recorded."
   [{:migration/id :migration/mtp-tag-sources :migration/migrate migrate-mtp-tag-sources!}
-   {:migration/id :migration/extended-tag-fields :migration/migrate migrate-extended-tag-fields!}])
+   {:migration/id :migration/extended-tag-fields :migration/migrate migrate-extended-tag-fields!}
+   {:migration/id :migration/smb-tag-sources :migration/migrate migrate-smb-tag-sources!}])
 
 ;; --- framework: applied-id ledger + runner -----------------------------------
 
