@@ -9,12 +9,14 @@
   in a finally, so an attached device is left exactly as it was found — the reader is
   read-only, only the fixture setup writes.
 
-  Verified on hardware:
-  - the \"audio\" view — embedded tags parsed from the file's own header over MTP
+  Verified on hardware (an iRiver AK100_II):
+  - the \"audio\" view — the full embedded tag set (title/artist/album/genre/
+    trackNumber/discNumber/durationMillis) parsed from the file's own header over MTP
     ranged reads (GetPartialObject) — gated on the device supporting partial reads;
   - the \"mtp\" view — the device's media index of object properties — read and
     asserted well-formed, with values checked when the device's scanner populated it
-    (population is device-dependent);
+    (population is device-dependent). The index carries every field but discNumber
+    (MTPTrackMetadata has no disc field; only the audio reader supplies it);
   - the layered merge in tags! (audio over mtp over path), and the path fallback for
     a format neither view can supply."
   (:require [clojure.string :as str]
@@ -44,11 +46,21 @@
 (defn- supports-partial-reads? []
   (try (.supportsPartialReads (MTPDeviceBridge/getInstance)) (catch Throwable _ false)))
 
+(def ^:private audio-view-attrs
+  "Every attribute the \"audio\" view exposes."
+  #{"title" "artist" "album" "genre" "trackNumber" "discNumber" "durationMillis"})
+
+(def ^:private mtp-view-attrs
+  "Every attribute the \"mtp\" index exposes — the audio set minus discNumber, which
+  the device media index has no field for (see MTPTrackMetadata)."
+  (disj audio-view-attrs "discNumber"))
+
 (defn- read-view
-  "The title/artist/album of `view` (\"audio\"/\"mtp\") for device path `p`, as a
-  Clojure map with string keys (nil values when the field is absent)."
+  "All attributes of `view` (\"audio\"/\"mtp\") for device path `p`, as a Clojure map
+  with string keys. Requests \"*\" (not a fixed list) because the two views expose
+  different sets — the production reader does the same (see dapr.device.mtp.tag)."
   [^Path p view]
-  (into {} (Files/readAttributes p (str view ":title,artist,album") (make-array LinkOption 0))))
+  (into {} (Files/readAttributes p (str view ":*") (make-array LinkOption 0))))
 
 (defn- with-device-fixture
   "Write `bytes` as `fname` into a fresh temp dir on `storage`, resolve the device
@@ -73,30 +85,42 @@
 (defn- first-storage []
   (first (device-fs/dir-children! (:uri (first devices)))))
 
+;; The fixture's embedded tags; its STREAMINFO encodes a 2000 ms duration.
+(def ^:private fixture-tags
+  {:title "Real Title" :artist "Real Artist" :album "Real Album" :genre "Jazz"
+   :track-number 7 :disc-number 2})
+
+;; The audio view's full expected map (string keys, native numeric values).
+(def ^:private expected-audio-view
+  {"title" "Real Title" "artist" "Real Artist" "album" "Real Album" "genre" "Jazz"
+   "trackNumber" 7 "discNumber" 2 "durationMillis" 2000})
+
 (deftest reads-embedded-tags-from-device-test
   (if-not devices
     (skip "no MTP device attached")
     (if-let [storage (first-storage)]
       (with-device-fixture
-        storage "fixture.flac" (fixtures/flac-bytes "Real Title" "Real Artist" "Real Album")
+        storage "fixture.flac" (fixtures/flac-bytes fixture-tags)
         (fn [^Path p rel]
-          (testing "the audio view parses the embedded FLAC tags over MTP ranged reads"
+          (testing "the audio view parses the full embedded FLAC tag set over MTP ranged reads"
             (if (supports-partial-reads?)
-              (is (= {"title" "Real Title" "artist" "Real Artist" "album" "Real Album"}
-                     (read-view p "audio"))
-                  "GetPartialObject ranged reads recover the embedded VORBIS_COMMENT")
+              (is (= expected-audio-view (read-view p "audio"))
+                  "GetPartialObject ranged reads recover every VORBIS_COMMENT field + duration")
               (skip "device does not support MTP partial reads — audio view unavailable")))
           (testing "the mtp index view is well-formed; matches when the device populated it"
             (let [mtp-view (read-view p "mtp")]
-              (is (= #{"title" "artist" "album"} (set (keys mtp-view)))
-                  "the mtp view returns exactly the requested object properties")
-              (when (some (comp not str/blank?) (vals mtp-view))
-                (is (= {"title" "Real Title" "artist" "Real Artist" "album" "Real Album"} mtp-view)
+              (is (= mtp-view-attrs (set (keys mtp-view)))
+                  "the mtp view exposes every field but discNumber")
+              (when-not (str/blank? (get mtp-view "title"))
+                (is (= (dissoc expected-audio-view "discNumber") mtp-view)
                     "when the device indexed the upload, its properties match the embedded tags"))))
-          (testing "tags! returns the embedded tags from the device, not path-derived"
-            (is (= {:artist "Real Artist" :album "Real Album" :title "Real Title" :source :embedded}
-                   (tag/tags! {:root (:uri storage) :rel rel :name "fixture.flac"} p))
-                "audio (and/or mtp) wins over the junk path-derived values"))))
+          (testing "tags! returns the full embedded tag set from the device, not path-derived"
+            (when (supports-partial-reads?)
+              (is (= {:title "Real Title" :artist "Real Artist" :album "Real Album"
+                      :genre "Jazz" :track-number 7 :disc-number 2 :duration-millis 2000
+                      :source :embedded}
+                     (tag/tags! {:root (:uri storage) :rel rel :name "fixture.flac"} p))
+                  "audio wins over the junk path-derived values and carries every field")))))
       (skip "device exposes no storage to write to"))))
 
 (deftest degrades-to-path-for-unsupported-format-test

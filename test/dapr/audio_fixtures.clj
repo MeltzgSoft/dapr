@@ -11,14 +11,17 @@
 (defn- len-prefixed! [^ByteArrayOutputStream o ^String s]
   (let [b (.getBytes s "UTF-8")] (le32! o (alength b)) (.write o b 0 (alength b))))
 
-(defn- vorbis-comment ^bytes [title artist album]
+(defn- vorbis-comment ^bytes [comments]
   (let [o (ByteArrayOutputStream.)]
     (len-prefixed! o "dapr-test")
-    (le32! o 3)
-    (len-prefixed! o (str "TITLE=" title))
-    (len-prefixed! o (str "ARTIST=" artist))
-    (len-prefixed! o (str "ALBUM=" album))
+    (le32! o (count comments))
+    (doseq [c comments] (len-prefixed! o c))
     (.toByteArray o)))
+
+(def ^:private comment-fields
+  "Tag key -> VORBIS_COMMENT field name, in the order they are written."
+  [[:title "TITLE"] [:artist "ARTIST"] [:album "ALBUM"] [:genre "GENRE"]
+   [:track-number "TRACKNUMBER"] [:disc-number "DISCNUMBER"]])
 
 (defn- block-header ^bytes [type last? len]
   (byte-array [(unchecked-byte (bit-or (if last? 0x80 0) (bit-and type 0x7F)))
@@ -40,11 +43,16 @@
     si))
 
 (defn flac-bytes
-  "A minimal valid FLAC (fLaC + STREAMINFO + a last-block VORBIS_COMMENT carrying
-  `title`/`artist`/`album`) as a byte array."
-  ^bytes [title artist album]
-  (let [o (ByteArrayOutputStream.)
-        c (vorbis-comment title artist album)]
+  "A minimal valid FLAC (fLaC + STREAMINFO + a last-block VORBIS_COMMENT) as a byte
+  array. The STREAMINFO encodes 88200 samples at 44100 Hz — a 2000 ms duration.
+  `tags` is a map with any of :title :artist :album :genre :track-number
+  :disc-number; only the present keys are written as VORBIS comments."
+  ^bytes [tags]
+  (let [comments (for [[k field] comment-fields
+                       :let [v (get tags k)] :when (some? v)]
+                   (str field "=" v))
+        o        (ByteArrayOutputStream.)
+        c        (vorbis-comment comments)]
     (.write o (.getBytes "fLaC" "US-ASCII"))
     (.write o (block-header 0 false 34))
     (.write o (stream-info))
