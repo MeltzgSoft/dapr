@@ -6,86 +6,27 @@ Update the checkboxes and **Status** lines as work lands.
 
 ---
 
-## ✅ CURRENT SESSION HANDOFF (feature 1 COMPLETE)
+## Current status
 
-**Branch: `feat/sink-only-tracks` (feature 1) — DONE. Unit + integration green;
-lint + cljfmt clean.**
+**All nine planned features are done and merged to `main`.** Both research
+spikes have since been promoted to real features:
 
-### Branch/stack state
-- `feat/app-settings` — ✅ done (off `main`).
-- `feat/source-only-tracklist` — ✅ done (off `main`).
-- `feat/library-availability` — ✅ done (stacked on `feat/source-only-tracklist`).
-- `feat/sink-only-tracks` — ✅ **done**, stacked on `feat/library-availability`
-  with `feat/app-settings` merged in (settings + source-only + availability).
-- Merge order when landing: app-settings → source-only-tracklist → library-availability
-  → sink-only-tracks.
+- **Spike 4 — MTP tags → shipped** on `spike/mtp-tags`
+  ([PR #33](https://github.com/meltzg/dapr/pull/33)). `dapr.device.mtp.tag`
+  reads embedded tags over MTP with no whole-file transfer — the melt-jfs 0.2.0
+  `audio` view (a ranged header read) preferred over the `mtp` device index,
+  both over path fallback. The full tag set (title/artist/album/genre/track/
+  disc/duration) threads through reader → cache → the sortable table columns;
+  two run-once migrations (`:migration/mtp-tag-sources`,
+  `:migration/extended-tag-fields`) backfill existing caches. Verified on
+  hardware (iRiver AK100_II, ~24 ms/track). See `docs/mtp-tags.md`.
+- **Spike 3 — SMB tags → in progress** on `spike/smb-tags`
+  ([PR #37](https://github.com/meltzg/dapr/pull/37)): a prototype for reading
+  embedded tags over SMB. Deliverable `docs/smb-tags.md` lives on that branch.
 
-### What landed this session (UI/events/format/tests — on top of the WIP planner+sync)
-- `ui/events.clj`: `run-preview!` reads `:sink-only-handling` from settings and
-  passes it + `:source-roots` (only computed for `:add-to-source`) to both the
-  `plan/selection-plan` call and the `sync/build-plan!` fallback. `run-sync!`
-  destructures `sink-catalog`, calls `sync/apply-source-adds-to-cache!` after
-  `apply-plan-to-cache!`, and logs the `:add-to-source` count.
-- `ui/format.clj`: `can-sync?` counts `:add-to-source`; `plan-summary-text` appends
-  `· To source N (bytes)` when positive.
-- `ui/views.clj`: `track-rows` now rows the **union** of source+sink catalogs with
-  `:in-source?`; sink-only rows lock on (`:on? true`/`:disable true`) under
-  `:keep`/`:add-to-source`. New `track-column` helper (`:cell-value-factory
-  identity` + per-field `:comparator` + red `:style` for `:in-source? false`)
-  replaces `text-column`/`size-column`. Settings modal gains a `sink-only-options`
-  radio group (Keep / Delete / Copy-back) bound to `:sink-only-handling`.
-- Tests: `plan_test` (`selection-plan-test` keep-by-default, `summary-test` with
-  `:delete`, new `sink-only-handling-test`), `sync_test`
-  (`apply-source-adds-to-cache-test`), `format_test` (add-to-source `can-sync?` +
-  `plan-summary-text` cases), and `sync_integration_test` (op-count map shape +
-  new end-to-end `sink-only-add-to-source-test` proving the real file copy-back).
-
-### Gotchas learned
-- The DEFAULT behavior CHANGED: previously every unselected sink track was deleted;
-  now sink-only tracks default to `:keep`. This rippled into `plan_test` AND
-  `sync_integration_test` (which now pass `:sink-only-handling :delete` to keep
-  exercising the delete path). `execute-plan!`'s result map now always carries
-  `:add-to-source` (so `{:add 0 :delete 0}` → `{:add 0 :add-to-source 0 :delete 0}`).
-- Clojure fns implement `java.util.Comparator`, so a 2-arg fn works as a cljfx
-  `:comparator`. Using `:cell-value-factory identity` lets a cell colour itself by
-  the whole row while `:comparator` preserves per-field sorting.
-- The integration suite shares a classpath with several **untracked** WIP tag files
-  (`src/dapr/fs/tags.clj` etc.) that don't yet compile (`No such var: tags/clean`);
-  they break `clojure -M:integration` until that separate feature lands. They are
-  unrelated to this branch — set them aside to get a clean integration run.
-- `docs/feature-plan.md` is otherwise kept untracked to follow across branches, but
-  it is committed on `feat/sink-only-tracks`.
-
-### Next up: `feat/theming` (6) ✅ DONE. `feat/logging` (2) ✅ DONE (base + both
-follow-ups: A leak fix `0bf0690`, B ListView scroll UX `28d45e5`). Feature 8 ✅ **DONE**
-but **rescoped**: `feat/shift-select` (range-select) was built then removed at the
-user's request and replaced with `feat/facet-toggle` — double-click an artist/album
-facet to (de)select its tracks, with single-click filtering deferred so a double-click
-never flashes the view filtered (`b4729fe` + fixes through `8f7e216`, stacked on
-`feat/logging`). Feature 9 ✅ **DONE** on `ci/release-uberjar`: `:build` alias +
-`build.clj` (per-OS AOT uberjar) and `release.yml` (v-tag matrix). **Remaining:**
-none. Spikes (3, 4) anytime.
-
-**Branch/commit state for continuing elsewhere:** on `feat/facet-toggle` at `8f7e216`
-(off `feat/logging` at `28d45e5`). Pull the branch, `clojure -M:test` should be green
-(78 tests); clj-kondo + cljfmt clean; no new reflection warnings. Features 2 and 8 are
-code-complete but each **wants a manual GUI smoke** (see their per-feature blocks) —
-the JavaFX interactions are only unit-tested at the state layer:
-- **Feature 2 (logging):** open View ▸ View Logs…, run a scan to stream lines; the
-  view follows the tail; scroll up mid-stream → it freezes; ⤓ re-follows.
-- **Feature 8 (facet-toggle):** single-click an artist → view filters after a ~250ms
-  beat; double-click one → its tracks toggle and the view does **not** narrow;
-  double-click again → they untoggle; near-full sink → only tracks that fit get
-  checked; the "All" entry and a red sink-only album under `:keep` are left alone.
-
-**Landing order (none pushed except `origin/feat/logging`):** these are stacked —
-`feat/logging` (28d45e5, +4 ahead of origin) → `feat/facet-toggle` (8f7e216). Merge
-`feat/logging` first, then `feat/facet-toggle`. `feat/facet-toggle` still carries
-feature 2's commits in its history.
-
-Next feature: none — all 9 features complete. Spike 4 (MTP tags) ✅ **DONE** on
-`spike/mtp-tags` + melt-jfs `feat/track-metadata` (see `docs/mtp-tags.md`).
-Spike 3 (SMB tags) can run anytime.
+The detailed per-feature and per-spike records below are the durable build log,
+kept for context; the merge mechanics for the original stacked PRs (#22–#28) are
+historical — that stack has long since landed on `main`.
 
 ---
 
@@ -284,7 +225,9 @@ tags via `device.tag`.
 - [ ] Recommend an approach + cost (SMB reads are the expensive path).
 - [ ] If viable, follow-up `feat/smb-tags` registers a `device.tag/tags!` method.
 
-**Status:** not started
+**Status:** 🔬 in progress on `spike/smb-tags`
+([PR #37](https://github.com/meltzg/dapr/pull/37)) — spike + prototype embedded
+tag reading over SMB. Deliverable `docs/smb-tags.md` on that branch.
 
 ---
 
@@ -306,11 +249,16 @@ Artist / AlbumName / Name) — potentially cheap vs. reading file bytes.
       melt-jfs 0.1.1 on the classpath (no "mtp" view → catches
       UnsupportedOperationException → path tags), lights up on the deps bump.
 
-**Status:** ✅ **DONE** on `spike/mtp-tags` — see `docs/mtp-tags.md` for cost
-analysis (metadata-only ≈ 100× cheaper than whole-object reads), caveats
-(device indexing, FILETYPE_UNKNOWN uploads, tag-cache migration for existing
-`:source :path` entries), and follow-ups (hardware verification, melt-jfs
-release + deps bump).
+**Status:** ✅ **DONE and promoted to a shipped feature** on `spike/mtp-tags`
+([PR #33](https://github.com/meltzg/dapr/pull/33)). Beyond the original spike:
+melt-jfs bumped to 0.2.0 (adds the `audio` view — embedded tags via
+`GetPartialObject` ranged reads, preferred over the `mtp` index); the full tag
+set (genre/track/disc/duration alongside artist/album/title) threads through the
+reader, cache, and the sortable table; run-once migrations backfill existing
+caches; and it is **hardware-verified** (iRiver AK100_II, ~24 ms/track). See
+`docs/mtp-tags.md` for the cost analysis (metadata-only ≈ 100× cheaper than
+whole-object reads), the audio/mtp view asymmetry, and remaining follow-ups
+(melt-jfs `sendFile` FILETYPE_UNKNOWN inference).
 
 ---
 
@@ -461,11 +409,15 @@ Rationale: front-load shared settings infra; 5→7→1 touch overlapping
 `track-rows`/`reload-catalogs!` code, so doing them in sequence avoids repeated
 merges.
 
-## Merge / rebase order (the open PR stack)
+## Merge / rebase order (historical — the stack has landed)
 
-The seven done features are **stacked PRs** — each targets its parent branch, so its
-diff shows only that feature. **Merge strictly bottom-up**; do not merge a child
-before its parent.
+> **Historical.** All of PRs #22–#28 below have merged to `main`. This section is
+> kept as a record of how the stack was landed (and the rebase recipe for future
+> stacked PRs).
+
+The seven done features shipped as **stacked PRs** — each targeted its parent branch, so its
+diff showed only that feature. They were merged strictly bottom-up (a child never
+before its parent).
 
 | Order | PR | Branch | Base (parent) |
 |-------|-----|--------|---------------|
