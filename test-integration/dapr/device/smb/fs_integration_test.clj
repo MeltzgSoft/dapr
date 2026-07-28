@@ -43,8 +43,9 @@
 (def ^:private linux?
   (str/includes? (str/lower-case (System/getProperty "os.name")) "linux"))
 
-;; Holds the running Testcontainer on Linux (so the fixture can stop it); stays nil
-;; on macOS/Windows where the native server is provisioned/owned by the CI workflow.
+;; Holds the single running Testcontainer on Linux, started once and shared across
+;; every SMB test namespace (see with-smb-backend); stays nil on macOS/Windows
+;; where the native server is provisioned/owned by the CI workflow.
 (defonce ^:private container (atom nil))
 ;; True while the fixture's backend is up, whichever OS. Tests read it via running?.
 (defonce ^:private backend-ready? (atom false))
@@ -66,30 +67,48 @@
     (.waitingFor (Wait/forListeningPort))
     (.start)))
 
-(defn- with-smb-backend
-  "Once-per-namespace fixture. On Linux it starts (and later stops) the Samba
-  container; on macOS/Windows it uses the CI-provisioned native SMB server as-is.
-  On those OSes there is no guest share, so it authenticates every host for the
-  whole run (the guest/anonymous path is covered by the Linux run). No graceful
-  skip — a container that won't start, or unreachable native shares, surface as
-  test failures."
+(defn- ensure-backend!
+  "Bring up the SMB backend once for the whole JVM run. On Linux it starts the
+  Samba container on first call and registers a JVM shutdown hook to stop it,
+  then no-ops on later calls — so the fixed port 445 is bound exactly once. This
+  matters because multiple SMB test namespaces each install with-smb-backend as a
+  :once fixture: restarting a fresh container on 445 between namespaces raced
+  smbd readiness / docker-proxy connection tracking and reset the next
+  namespace's connections. Keeping one container up for the whole run removes that
+  race. On macOS/Windows there is no container — the native CI server is used
+  as-is — so this only flips backend-ready?."
+  []
+  (when (and linux? (nil? @container))
+    (let [c (start-samba!)]
+      (reset! container c)
+      (.addShutdownHook (Runtime/getRuntime)
+                        (Thread. #(try (.stop c) (catch Throwable _ nil))))))
+  (reset! backend-ready? true))
+
+(defn with-smb-backend
+  "Per-namespace :once fixture, shared with dapr.device.smb.tag-integration-test.
+  Ensures the single shared SMB backend is up (see ensure-backend!) and clears
+  dapr.device.smb.fs's process-wide FileSystem cache so the namespace starts from
+  a clean handle. On macOS/Windows there is no guest share, so it authenticates
+  every host for the whole run (the guest/anonymous path is covered by the Linux
+  run). No graceful skip — a container that won't start, or unreachable native
+  shares, surface as test failures. The container is torn down by ensure-backend!'s
+  JVM shutdown hook, not here, so it survives across namespaces."
   [run-tests]
-  (let [c (when linux? (start-samba!))]
-    (reset! container c)
-    (reset! backend-ready? true)
-    (try
-      (if linux?
-        (run-tests)
-        (binding [smb/*credential-lookup* (constantly auth-creds)]
-          (run-tests)))
-      (finally
-        (when c (.stop c))
-        (reset! container nil)
-        (reset! backend-ready? false)))))
+  (ensure-backend!)
+  (smb/close-all!)
+  (if linux?
+    (run-tests)
+    (binding [smb/*credential-lookup* (constantly auth-creds)]
+      (run-tests))))
 
 (use-fixtures :once with-smb-backend)
 
-(defn- running? [] @backend-ready?)
+(defn running?
+  "True while the SMB backend is up. Public so the tag integration test can gate
+  on the same fixture."
+  []
+  @backend-ready?)
 
 (defn- seed-local!
   "Create a local temp directory containing `content` at relative path `rel`, and
