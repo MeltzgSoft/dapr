@@ -113,19 +113,3 @@
       (is (= [] (migrations/run-migrations! conn)))
       (is (= :path (:source (get (cache/library-catalog (d/db conn) m) ["song.mp3" 1])))
           "not re-cleared: :migration/mtp-tag-sources already recorded"))))
-
-(deftest seed-legacy-baseline-records-without-running-test
-  (let [conn (cache/empty-conn)
-        m    (cache/upsert-library! conn {:name "M" :roots ["mtp://dev/"]})]
-    (cache/replace-library-tracks! conn m [(mtp-path-track "song.mp3" 1)])
-    (cache/set-app-setting! conn :cache/mtp-tag-migration-done? true)
-    (testing "the legacy flag seeds :migration/mtp-tag-sources as applied without running the fn"
-      (is (true? (migrations/seed-legacy-baseline! conn)))
-      (is (contains? (migrations/applied-ids (d/db conn)) :migration/mtp-tag-sources))
-      (is (= :path (:source (get (cache/library-catalog (d/db conn) m) ["song.mp3" 1])))
-          "migrate fn did not run — source untouched")
-      (is (nil? (cache/app-setting (d/db conn) :cache/mtp-tag-migration-done?))
-          "obsolete flag cleared"))
-    (testing "after seeding, run-migrations! and a repeat seed are both no-ops"
-      (is (= [] (migrations/run-migrations! conn)))
-      (is (nil? (migrations/seed-legacy-baseline! conn))))))

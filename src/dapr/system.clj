@@ -35,13 +35,9 @@
     (when (and (empty? (cache/libraries (d/db conn))) (.exists (io/file legacy)))
       (cache/migrate-from-edn! conn (store/load! legacy))
       (cache/snapshot! conn path))
-    ;; Bridge a pre-framework one-off flag into the applied-id ledger so its migration
-    ;; isn't re-run (dev installs only), then run any pending DB migrations. Persist
-    ;; when either changed the DB.
-    (let [seeded? (migrations/seed-legacy-baseline! conn)
-          ran     (migrations/run-migrations! conn)]
-      (when (or seeded? (seq ran))
-        (cache/snapshot! conn path)))
+    ;; Run any pending DB migrations, persisting when one changed the DB.
+    (when (seq (migrations/run-migrations! conn))
+      (cache/snapshot! conn path))
     {:conn conn :path path}))
 
 (defmethod ig/halt-key! :dapr/cache [_ {:keys [conn path]}]

@@ -22,8 +22,7 @@
   recorded only after its `:migrate` fn returns, so one that throws is left unrecorded
   and retried next startup — migrations should therefore be written to be safely
   re-runnable."
-  (:require [dapr.db.cache :as cache]
-            [dapr.device.format :as device]
+  (:require [dapr.device.format :as device]
             [datascript.core :as d]))
 
 ;; --- migrations (registered below; run in registry order) --------------------
@@ -88,9 +87,8 @@
        (mapv #(dissoc % :db/id))))
 
 (defn record-applied!
-  "Record migration `id` as applied, stamped with the current time. Used both by
-  `run-migrations!` after a migration runs and to seed a baseline for a migration a
-  prior release already performed by other means."
+  "Record migration `id` as applied, stamped with the current time. Called by
+  `run-migrations!` after a migration runs."
   [conn id]
   (d/transact! conn [{:migration/id id :migration/applied-at (java.util.Date.)}]))
 
@@ -111,22 +109,3 @@
        (migrate conn)
        (record-applied! conn id))
      (mapv :migration/id pending))))
-
-(def ^:private legacy-mtp-flag
-  "Pre-framework app-setting flag that marked the :migration/mtp-tag-sources migration
-  as done. Superseded by the applied-id ledger; retained only to seed a baseline on
-  installs that ran the flag-based code, so that migration isn't re-run."
-  :cache/mtp-tag-migration-done?)
-
-(defn seed-legacy-baseline!
-  "Bridge a pre-framework one-off migration recorded via an app-setting flag into the
-  applied-id ledger: when the flag is set and :migration/mtp-tag-sources is not yet
-  recorded, record it as already applied (without running it) and clear the obsolete
-  flag. Returns true when it seeded, else nil. Dev-only — removable once no DB still
-  carries the flag."
-  [conn]
-  (when (and (cache/app-setting (d/db conn) legacy-mtp-flag)
-             (not (contains? (applied-ids (d/db conn)) :migration/mtp-tag-sources)))
-    (record-applied! conn :migration/mtp-tag-sources)
-    (cache/set-app-setting! conn legacy-mtp-flag nil)
-    true))
