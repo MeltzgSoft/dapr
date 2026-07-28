@@ -89,9 +89,22 @@ tests assert the view's shape and print a timing for the metadata read.
 
 `dapr.device.mtp.tag` registers `tag/tags! :mtp`, layering three sources per
 field with `merge-device-tags` (pure + unit-tested): path-derived fallback,
-then the `"mtp"` view over it, then the `"audio"` view over that. So for each of
-title/artist/album the best available value wins — embedded tags first, the
-device index next, the path last.
+then the `"mtp"` view over it, then the `"audio"` view over that. So for each
+field the best available value wins — embedded tags first, the device index
+next, the path last. The full set threads through: title/artist/album/genre and
+trackNumber/discNumber/durationMillis (path derivation only supplies the first
+three; the rest come from a view or stay nil). Everything downstream carries
+them — the cache track entity, the catalog, the scan-reuse path, and the track
+table (columns disc/track/title/duration/artist/album/genre).
+
+`read-view` requests `"*"`, not a fixed attribute list, because the two views
+expose **different** sets: `AudioTags` (audio view) has discNumber but
+`MTPTrackMetadata` (mtp index) has no disc field. `melt-jfs` throws
+`IllegalArgumentException` for an attribute a view doesn't know, which the
+reader would swallow to `{}` — losing that whole layer — so a shared explicit
+list would silently drop the entire `mtp` layer. `"*"` returns whatever each
+view supports; `merge-device-tags` picks each field by name and an absent one
+just reads as nil.
 
 - **`audio` preferred over `mtp`**: the `audio` view parses the file's own tags,
   so it is correct even when the device's index is stale, unpopulated, or
@@ -110,7 +123,7 @@ device index next, the path last.
 ## Caveats
 
 These applied to the `mtp` (device-index) view; the `audio` view now leads and
-resolves the first three, with `mtp` and path still behind it:
+resolves every field it can, with `mtp` and path still behind it:
 
 - **The device must have indexed the file** *(mitigated)*. The `mtp` view is
   blank until the device's media scanner runs; the `audio` view reads the file's
@@ -139,26 +152,28 @@ resolves the first three, with `mtp` and path still behind it:
   matters: an ungated re-run would re-clear genuinely tagless files (device reported
   nothing) every launch, re-paying the device read each time — the rejected option
   (b). Option (c), do nothing, would have left existing libraries on path tags until
-  an mtime change. (Installs that ran the earlier flag-based version are bridged into
-  the applied-id ledger by `migrations/seed-legacy-baseline!` so it isn't re-run.)
+  an mtime change.
 
 ## Verification status
 
-- melt-jfs: full unit suite green (38 tests) against the fake backend; the
-  FFM struct layout and the real USB cost need a **physical device** — plug
-  one in and run `./gradlew integrationTest`
-  (`trackMetadataReadsForAudioFileWithoutTransferringContent` prints the
-  timing this doc estimates).
+- melt-jfs: full unit suite green against the fake backend; the FFM struct
+  layout and the real USB cost were confirmed on hardware (see below).
 - dapr: unit tests cover the layered merge (audio over mtp over path, sticky
-  `:embedded`) and the no-view fallback; lint + cljfmt clean. With 0.2.0 on the
-  classpath, end-to-end (real tags in the track table) just needs a device —
-  `clojure -M:run` and scan an mtp:// root.
+  `:embedded`) and the no-view fallback; lint + cljfmt clean.
+- **On hardware** *(done — iRiver AK100_II)*: `clojure -M:integration`
+  (`dapr.device.mtp.tag-integration-test`) writes a FLAC fixture to the device
+  and reads it back. The `audio` view returned all seven fields over
+  GetPartialObject (genre=Jazz, trackNumber=7, discNumber=2, durationMillis=2000)
+  and `tags!` produced the full `:source :embedded` map in **~24 ms** — a
+  metadata-only cost, as predicted. The `mtp` index returned six fields (no
+  discNumber), confirming the view asymmetry the `"*"` read exists to handle.
 
 ## Follow-ups
 
-1. Verify on hardware: melt-jfs `./gradlew integrationTest` + the dapr smoke
-   above; record the measured per-track cost here — now covering both the
-   `audio` (ranged header read, ~KB) and `mtp` (index) paths.
+1. ~~Verify on hardware: melt-jfs `./gradlew integrationTest` + the dapr smoke
+   above; record the measured per-track cost here.~~ **Done** — dapr's
+   `dapr.device.mtp.tag-integration-test` verified the full field set on an
+   iRiver AK100_II (~24 ms/track, metadata-only); see Verification status.
 2. ~~Merge melt-jfs [PR #9](https://github.com/MeltzgSoft/melt-jfs/pull/9),
    tag a release, bump dapr's `deps.edn`.~~ **Done** — released as melt-jfs
    0.1.2 (Maven Central); `deps.edn` bumped 0.1.1 → 0.1.2.
@@ -170,5 +185,7 @@ resolves the first three, with `mtp` and path still behind it:
    `deps.edn` on 0.2.0; `tag/tags! :mtp` layers audio over mtp over path.
 4. melt-jfs follow-up: `sendFile` filetype inference (fixes the
    `FILETYPE_UNKNOWN` caveat at the source).
-5. Optional someday: the view already surfaces genre/trackNumber/
-   durationMillis if the track table ever wants more columns.
+5. ~~Optional someday: the view already surfaces genre/trackNumber/
+   durationMillis if the track table ever wants more columns.~~ **Done** — the
+   full set (genre/trackNumber/discNumber/durationMillis) now threads through the
+   reader, cache, and track table as dedicated columns.
