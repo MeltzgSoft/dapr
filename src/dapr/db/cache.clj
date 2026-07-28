@@ -2,8 +2,9 @@
   "Persisted scan cache and system of record for libraries, backed by an
   in-memory DataScript database snapshotted to an EDN file. The DB owns library
   identity and references: a *library* entity holds its name and roots; a *track*
-  entity is the device-independent identity [rel size] plus artist/album/title
-  tags; and a *presence* links a track to the library it was found on, recording
+  entity is the device-independent identity [rel size] plus its tags (artist,
+  album, title, genre, track/disc number, duration); and a *presence* links a
+  track to the library it was found on, recording
   the root it lives under and its mtime. Tracks/presences are derived (a rescan
   rebuilds them), but libraries are authoritative user config, so writes are
   atomic and a corrupt/old snapshot is preserved rather than silently discarded.
@@ -202,22 +203,27 @@
 
 (defn library-catalog
   "key -> track map for library `lib-eid`, in the shape the planner and table
-  expect: {:key [rel size] :rel :size :root :mtime :artist :album :title :source}.
-  :source is :embedded / :path (how the tags were obtained). Missing tags/mtime
-  come back as nil."
+  expect: {:key [rel size] :rel :size :root :mtime :artist :album :title :genre
+  :track-number :disc-number :duration-millis :source}. :source is :embedded /
+  :path (how the tags were obtained). Missing tags/mtime come back as nil."
   [db lib-eid]
   (->> (d/q '[:find [(pull ?p [:presence/root :presence/mtime
                                {:presence/track [:track/rel :track/size :track/tag-source
-                                                 :track/artist :track/album :track/title]}]) ...]
+                                                 :track/artist :track/album :track/title
+                                                 :track/genre :track/track-number
+                                                 :track/disc-number :track/duration-millis]}]) ...]
               :in $ ?lib
               :where [?p :presence/library ?lib]]
             db lib-eid)
        (reduce (fn [acc {:keys [presence/root presence/mtime presence/track]}]
                  (let [{:keys [track/rel track/size track/artist track/album track/title
-                               track/tag-source]} track]
+                               track/genre track/track-number track/disc-number
+                               track/duration-millis track/tag-source]} track]
                    (assoc acc [rel size]
-                          {:key   [rel size] :rel rel :size size :root root :mtime mtime
-                           :artist artist :album album :title title :source tag-source})))
+                          {:key             [rel size] :rel rel :size size :root root :mtime mtime
+                           :artist          artist :album album :title title :genre genre
+                           :track-number    track-number :disc-number disc-number
+                           :duration-millis duration-millis :source tag-source})))
                {})))
 
 (defn track-libraries
@@ -236,13 +242,18 @@
   entity's tags are written only when `write-tags?` (so a path-derived scan can be
   recorded as a presence without downgrading a track's existing embedded tags —
   see replace-library-tracks!). Nil values are omitted (DataScript rejects them)."
-  [lib-eid write-tags? {:keys [rel size artist album title source root mtime]}]
+  [lib-eid write-tags? {:keys [rel size artist album title genre track-number
+                               disc-number duration-millis source root mtime]}]
   (let [tid (str "track-" rel "-" size)]
     [(cond-> {:db/id tid :track/rel rel :track/size size}
-       (and write-tags? artist) (assoc :track/artist artist)
-       (and write-tags? album)  (assoc :track/album album)
-       (and write-tags? title)  (assoc :track/title title)
-       (and write-tags? source) (assoc :track/tag-source source))
+       (and write-tags? artist)          (assoc :track/artist artist)
+       (and write-tags? album)           (assoc :track/album album)
+       (and write-tags? title)           (assoc :track/title title)
+       (and write-tags? genre)           (assoc :track/genre genre)
+       (and write-tags? track-number)    (assoc :track/track-number track-number)
+       (and write-tags? disc-number)     (assoc :track/disc-number disc-number)
+       (and write-tags? duration-millis) (assoc :track/duration-millis duration-millis)
+       (and write-tags? source)          (assoc :track/tag-source source))
      (cond-> {:presence/library lib-eid :presence/track tid :presence/root root}
        mtime (assoc :presence/mtime mtime))]))
 
@@ -285,7 +296,11 @@
     :else (or (not= (:source cached) (:source t))
               (not= (:artist cached) (:artist t))
               (not= (:album cached) (:album t))
-              (not= (:title cached) (:title t)))))
+              (not= (:title cached) (:title t))
+              (not= (:genre cached) (:genre t))
+              (not= (:track-number cached) (:track-number t))
+              (not= (:disc-number cached) (:disc-number t))
+              (not= (:duration-millis cached) (:duration-millis t)))))
 
 (defn replace-library-tracks!
   "Set library `lib-eid`'s presences to exactly `tracks` (catalog track maps).

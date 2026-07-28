@@ -29,7 +29,7 @@
 (deftest file-error-falls-back-test
   (testing "an Error from the tag reader (e.g. jaudiotagger StackOverflowError) is
             caught so one bad file can't abort the scan"
-    (with-redefs [dapr.device.file.tag/read-tag (fn [_] (throw (StackOverflowError.)))]
+    (with-redefs [dapr.device.file.tag/read-audio (fn [_] (throw (StackOverflowError.)))]
       (is (= {:artist "Artist" :album "Album" :title "Title" :source :path}
              (tag/tags! {:root "file:///x/Artist/Album/Title.mp3"
                          :rel  "Artist/Album/Title.mp3"}

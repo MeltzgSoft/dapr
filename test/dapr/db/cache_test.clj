@@ -5,8 +5,11 @@
   (:import (java.nio.file Files)
            (java.nio.file.attribute FileAttribute)))
 
-(defn- track [rel size & {:keys [artist album title root mtime source]}]
+(defn- track [rel size & {:keys [artist album title genre track-number disc-number
+                                 duration-millis root mtime source]}]
   {:rel rel :size size :artist artist :album album :title title
+   :genre genre :track-number track-number :disc-number disc-number
+   :duration-millis duration-millis
    :root (or root "file:///r/") :mtime mtime :source source})
 
 (deftest library-crud-test
@@ -113,6 +116,7 @@
         (is (= #{["Artist/Album/One.mp3" 10] ["Two.flac" 20]} (set (keys cat))))
         (is (= {:key   ["Artist/Album/One.mp3" 10] :rel "Artist/Album/One.mp3" :size 10
                 :root  "file:///r/" :mtime 111 :artist "Artist" :album "Album" :title "One"
+                :genre nil :track-number nil :disc-number nil :duration-millis nil
                 :source nil}
                (get cat ["Artist/Album/One.mp3" 10])))
         (is (nil? (:artist (get cat ["Two.flac" 20]))))))
@@ -122,6 +126,31 @@
                                              (track "Three.mp3" 30)])
       (is (= #{["Two.flac" 20] ["Three.mp3" 30]}
              (set (keys (cache/library-catalog (d/db conn) a))))))))
+
+(deftest extended-tag-fields-round-trip-test
+  (let [conn (cache/empty-conn)
+        a    (cache/upsert-library! conn {:name "A" :roots ["mtp://dev/"]})]
+    (cache/replace-library-tracks!
+     conn a [(track "Artist/Album/One.mp3" 10 :artist "Artist" :album "Album" :title "One"
+                    :genre "Rock" :track-number 3 :disc-number 1 :duration-millis 210000
+                    :source :embedded :mtime 111)])
+    (testing "genre / track / disc / duration are stored and returned by the catalog"
+      (is (= {:genre "Rock" :track-number 3 :disc-number 1 :duration-millis 210000}
+             (select-keys (get (cache/library-catalog (d/db conn) a) ["Artist/Album/One.mp3" 10])
+                          [:genre :track-number :disc-number :duration-millis]))))
+    (testing "an unchanged re-scan transacts nothing (extended fields are part of the diff)"
+      (let [before (d/db conn)]
+        (cache/replace-library-tracks!
+         conn a [(track "Artist/Album/One.mp3" 10 :artist "Artist" :album "Album" :title "One"
+                        :genre "Rock" :track-number 3 :disc-number 1 :duration-millis 210000
+                        :source :embedded :mtime 111)])
+        (is (identical? before (d/db conn)) "no transaction on an unchanged re-scan")))
+    (testing "a changed extended field triggers an upsert"
+      (cache/replace-library-tracks!
+       conn a [(track "Artist/Album/One.mp3" 10 :artist "Artist" :album "Album" :title "One"
+                      :genre "Jazz" :track-number 3 :disc-number 1 :duration-millis 210000
+                      :source :embedded :mtime 111)])
+      (is (= "Jazz" (:genre (get (cache/library-catalog (d/db conn) a) ["Artist/Album/One.mp3" 10])))))))
 
 (deftest large-rescan-no-overflow-test
   (testing "re-scanning a large library (every track an upsert) doesn't overflow

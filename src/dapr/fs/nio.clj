@@ -52,7 +52,8 @@
   [known {:keys [rel size mtime] :as m} ^Path p]
   (let [cached (when known (known rel size))]
     (if (and cached (:source cached) (= mtime (:mtime cached)))
-      (select-keys cached [:artist :album :title :source])
+      (select-keys cached [:artist :album :title :genre
+                           :track-number :disc-number :duration-millis :source])
       (device-tag/tags! m p))))
 
 (defn- audio-track
