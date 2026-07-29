@@ -1,10 +1,10 @@
 (ns dapr.sync-test
-  "Unit coverage for the cache-reconciling scan glue. nio/catalog! is stubbed so
-  these tests exercise the cache wiring without touching the filesystem; the real
-  filesystem walk is covered by dapr.fs.nio-test and the integration suite."
+  "Unit coverage for the cache side of executing a sync — how an executed plan is
+  reflected back into the cache without re-walking either library. The transfers
+  themselves are covered by the integration suite; scanning belongs to
+  dapr.refresh and dapr.fs.nio."
   (:require [clojure.test :refer [deftest is testing]]
             [dapr.db.cache :as cache]
-            [dapr.fs.nio :as nio]
             [dapr.sync :as sync]
             [datascript.core :as d]))
 
@@ -13,36 +13,6 @@
   so a test can look a track up by its stable file identity."
   [cat]
   (into {} (map (fn [[_ t]] [[(:rel t) (:size t)] t])) cat))
-
-(def ^:private tracks
-  [{:rel "A/B/One.mp3" :size 10 :mtime 5 :artist "X" :album "B" :title "One"
-    :root "file:///r/" :key ["X" "B" "One" 10 "A/B/One.mp3"]}
-   {:rel "Two.flac" :size 20 :mtime 6 :title "Two" :root "file:///r/"
-    :key [nil nil "Two" 20 "Two.flac"]}])
-
-(deftest scan-into-cache-test
-  (let [conn (cache/empty-conn)
-        lib  (cache/upsert-library! conn {:name "L" :roots ["file:///r/"]})
-        seen (atom [])]
-    (with-redefs [nio/catalog! (fn [_roots _on-scan _ext known]
-                                 (swap! seen conj known)
-                                 tracks)]
-      (testing "returns the scanned catalog, indexable by physical file [rel size]"
-        (let [cat (by-file (sync/scan-into-cache! conn lib {:roots ["file:///r/"]}))]
-          (is (= #{["A/B/One.mp3" 10] ["Two.flac" 20]} (set (keys cat))))
-          (is (= "X" (:artist (get cat ["A/B/One.mp3" 10]))))))
-
-      (testing "the scan is persisted into the cache"
-        (is (= #{["A/B/One.mp3" 10] ["Two.flac" 20]}
-               (set (keys (by-file (cache/library-catalog (d/db conn) lib)))))))
-
-      (testing "the first scan's known lookup is empty; the next reflects the cache"
-        (let [first-known (first @seen)]
-          (is (nil? (first-known "A/B/One.mp3" 10))))
-        (sync/scan-into-cache! conn lib {:roots ["file:///r/"]})
-        (let [next-known (last @seen)]
-          (is (= 5 (:mtime (next-known "A/B/One.mp3" 10))))
-          (is (= "X" (:artist (next-known "A/B/One.mp3" 10)))))))))
 
 (deftest apply-plan-to-cache-test
   (let [conn   (cache/empty-conn)

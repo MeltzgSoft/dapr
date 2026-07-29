@@ -16,7 +16,7 @@
         (nio/delete-file! dst "music/song.mp3")
         (is (not (tfs/exists? (.resolve dst "music/song.mp3"))))))))
 
-(deftest catalog!-test
+(deftest scan-roots!-test
   (testing "scans audio files across multiple roots, tagging :root and :rel"
     (let [d1 (tfs/temp-dir!)
           d2 (tfs/temp-dir!)]
@@ -25,8 +25,7 @@
         (tfs/write! (.resolve d1 "cover.jpg") "img")
         (tfs/write! (.resolve d1 "sub/b.flac") "bb")
         (tfs/write! (.resolve d2 "c.ogg") "ccc")
-        (let [tracks (nio/catalog! [(tfs/uri-of d1) (tfs/uri-of d2)])
-              by-key (into {} (map (juxt :key identity)) tracks)
+        (let [by-key (tfs/scan-catalog! [(tfs/uri-of d1) (tfs/uri-of d2)])
               ;; no embedded tags -> path-derived: [artist album title size rel]
               a      [nil nil "a" 3 "a.mp3"]
               b      ["sub" nil "b" 2 "sub/b.flac"]
@@ -37,20 +36,24 @@
           (is (= (tfs/uri-of d2) (:root (by-key c))))
           (testing "non-audio files are ignored"
             (is (not (contains? by-key [nil nil "cover" 3 "cover.jpg"])))))
-        (testing "on-scan emits a :file event once per scanned audio file"
+        (testing "every scanned track is reported once, to :on-batch and :on-scan alike"
           (let [files  (atom [])
                 dirs   (atom [])
-                tracks (nio/catalog! [(tfs/uri-of d1) (tfs/uri-of d2)]
-                                     (fn [{:keys [type rel track]}]
-                                       (case type
-                                         :file (swap! files conj (:key track))
-                                         :dir  (swap! dirs conj rel)
-                                         nil)))]
+                tracks (tfs/scan-tracks! [(tfs/uri-of d1) (tfs/uri-of d2)]
+                                         {:on-scan (fn [{:keys [type rel track]}]
+                                                     (case type
+                                                       :file (swap! files conj (:key track))
+                                                       :dir  (swap! dirs conj rel)
+                                                       nil))})]
             (is (= (set (map :key tracks)) (set @files)))
             (is (= (count tracks) (count @files)))
             (testing "and a :dir event for each directory entered, including the root and subdirs"
               (is (some #{""} @dirs))
               (is (some #{"sub"} @dirs)))))
+        (testing "a completed scan reports every key it saw, for the cache reconcile"
+          (let [res (nio/scan-roots! [(tfs/uri-of d1)] {})]
+            (is (= :complete (:status res)))
+            (is (= #{["a.mp3" 3] ["sub/b.flac" 2]} (:seen res)))))
         (finally
           (tfs/delete-tree! d1)
           (tfs/delete-tree! d2))))))
@@ -65,13 +68,13 @@
         (let [total   (atom 0)                       ; Σ directory child counts
               done    (atom 0)                       ; entries visited
               entered (atom [])]                     ; :dir events, in order
-          (nio/catalog! [(tfs/uri-of d)]
-                        (fn [{:keys [type rel] :as ev}]
-                          (case type
-                            :dir     (swap! entered conj rel)
-                            :listing (swap! total + (:count ev))
-                            :entry   (swap! done inc)
-                            nil)))
+          (nio/scan-roots! [(tfs/uri-of d)]
+                           {:on-scan (fn [{:keys [type rel] :as ev}]
+                                       (case type
+                                         :dir     (swap! entered conj rel)
+                                         :listing (swap! total + (:count ev))
+                                         :entry   (swap! done inc)
+                                         nil))})
           (testing "every child is both counted (total) and visited (done)"
             ;; root has 3 children (a.mp3, cover.jpg, sub), sub has 1 (b.flac)
             (is (= 4 @total))
@@ -87,10 +90,10 @@
       (try
         (tfs/write! (.resolve d "sub/b.mp3") "b")
         (is (thrown? clojure.lang.ExceptionInfo
-                     (nio/catalog! [(tfs/uri-of d)]
-                                   (fn [{:keys [type]}]
-                                     (when (= :file type)
-                                       (throw (ex-info "stop" {:dapr/abort true})))))))
+                     (nio/scan-roots! [(tfs/uri-of d)]
+                                      {:on-scan (fn [{:keys [type]}]
+                                                  (when (= :file type)
+                                                    (throw (ex-info "stop" {:dapr/abort true}))))})))
         (finally
           (tfs/delete-tree! d))))))
 

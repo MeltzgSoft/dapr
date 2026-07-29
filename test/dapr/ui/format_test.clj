@@ -134,6 +134,27 @@
     (is (= :light (fmt/active-theme :system nil)))
     (is (= :light (fmt/active-theme nil nil)))))
 
+(deftest name-list-test
+  (testing "quotes and joins library names readably"
+    (is (= "" (fmt/name-list [])))
+    (is (= "'A'" (fmt/name-list ["A"])))
+    (is (= "'A' and 'B'" (fmt/name-list ["A" "B"])))
+    (is (= "'A', 'B' and 'C'" (fmt/name-list ["A" "B" "C"])))))
+
+(deftest refresh-text-test
+  (let [libs [{:id 1 :name "Phone"} {:id 2 :name "NAS"}]]
+    (testing "names the library being walked, with its counts once a total is known"
+      (is (= "Refreshing 'Phone'… 30/120"
+             (fmt/refresh-text {:active 1 :progress {:done 30 :total 120}} libs)))
+      (is (= "Refreshing 'Phone'…"
+             (fmt/refresh-text {:active 1 :progress nil} libs))))
+    (testing "with nothing in flight, counts what is still waiting"
+      (is (= "Refresh queued (2)"
+             (fmt/refresh-text {:active nil :status {1 :pending 2 :paused}} libs))))
+    (testing "blank once every library is up to date"
+      (is (= "" (fmt/refresh-text {:active nil :status {1 :complete 2 :complete}} libs)))
+      (is (= "" (fmt/refresh-text {:active nil :status {}} libs))))))
+
 (deftest library-unavailable?-test
   (testing "true only when probed and explicitly unavailable"
     (is (true? (fmt/library-unavailable? {1 false} 1)))

@@ -125,6 +125,31 @@
            (format " · Blocked %d" (:blocked summary))))
     "No plan yet."))
 
+(defn name-list
+  "Render library names as a readable list: \"'A'\", \"'A' and 'B'\", \"'A', 'B' and
+  'C'\". Used in the sync confirmation, which names the libraries still refreshing."
+  [names]
+  (let [quoted (mapv #(str "'" % "'") names)]
+    (case (count quoted)
+      0 ""
+      1 (first quoted)
+      (str (str/join ", " (butlast quoted)) " and " (last quoted)))))
+
+(defn refresh-text
+  "One-line description of the background refresh for the sync bar: what is being
+  walked now (with its file counts), or how many libraries are still queued, or
+  \"\" when everything is up to date. `libraries` supplies the display name."
+  [{:keys [active status progress]} libraries]
+  (let [name-of (fn [id] (:name (first (filter #(= (:id %) id) libraries))))
+        waiting (count (filter (comp #{:pending :paused} val) status))]
+    (cond
+      active (let [{:keys [done total]} progress]
+               (format "Refreshing %s…%s"
+                       (name-list [(name-of active)])
+                       (if (and total (pos? total)) (format " %d/%d" (or done 0) total) "")))
+      (pos? waiting) (format "Refresh queued (%d)" waiting)
+      :else "")))
+
 (defn library-unavailable?
   "True when library `id`'s availability has been probed and came back false, so
   the UI should grey it out and refuse selection. Unprobed libraries (absent from

@@ -73,90 +73,160 @@
     ;; :key is derived from the tags, so it must be computed after the merge.
     (assoc m :key (lib/track-key m))))
 
-(defn- walk-audio-tracks!
-  "Depth-first walk of `root`, collecting a track map for every audio file. Driven
-  by an explicit work stack of directories rather than call-stack recursion, so an
-  arbitrarily deep tree (or a symlink/junction cycle on a share, which gets no OS
-  ELOOP protection) can't overflow the JVM stack. Opens each directory's stream
-  explicitly (rather than via Files/walkFileTree) and notifies `on-scan` *before*
-  the per-directory listing call -- which over MTP is a single blocking native
-  round-trip -- making it possible to pinpoint a directory whose listing hangs (the
-  last :dir event before the freeze names it). Reads one attribute set per entry,
-  the same as Files/walkFileTree would.
+(defn- visit-dir!
+  "Visit one directory of a walk: notify `on-scan`, list it, and split its children
+  into sub-directories and audio track maps. Returns [child-dirs tracks], or nil
+  when the directory can't be listed (skipped, matching Files/walkFileTree's
+  visitFileFailed=CONTINUE). The stream is closed before the caller descends, so no
+  handle is held per ancestor -- which is what makes the remaining work stack a
+  complete, resumable frontier.
 
-  `on-scan`, when supplied, is called with:
-    {:type :dir     :rel <dir rel path>} as each directory is *visited*, before its
-                                         listing call (so the last :dir before a
-                                         freeze names the directory whose listing
-                                         hung over MTP);
-    {:type :listing :count <n>}          once that directory's children are listed,
-                                         so progress totals can grow as the walk
-                                         descends (n is its immediate child count);
+  Listing is done by opening the directory's stream explicitly (rather than via
+  Files/walkFileTree) so `on-scan` can be notified *before* the listing call --
+  which over MTP is a single blocking native round-trip -- making it possible to
+  pinpoint a directory whose listing hangs (the last :dir event before the freeze
+  names it). `on-scan`, when supplied, is called with:
+    {:type :dir     :rel <dir rel path>} as the directory is *visited*, before its
+                                         listing call;
+    {:type :listing :count <n>}          once its children are listed, so progress
+                                         totals can grow as the walk descends (n is
+                                         its immediate child count);
     {:type :entry}                       for every child visited, advancing the
                                          done count toward the total;
     {:type :file    :track <track map>}  for each audio file found.
-  Entries that fail to stat, and sub-directories that fail to open, are skipped
-  (matching Files/walkFileTree's visitFileFailed=CONTINUE). If `on-scan` throws an
-  ex-info carrying :dapr/abort, the whole walk unwinds (used to cancel a scan that
-  a newer one has superseded). `known` (rel size -> cached track), when supplied,
-  lets unchanged files reuse their cached tags (see track-tags!)."
-  [^Path root uri extensions on-scan known]
-  (loop [stack  [root]
-         tracks []]
-    (if (empty? stack)
-      tracks
-      (let [^Path dir (peek stack)
-            stack     (pop stack)]
-        (when on-scan (on-scan {:type :dir :rel (relative-key root dir)}))
-        ;; List the directory (closing its stream before descending, so we never
-        ;; hold a handle open per ancestor). A directory that fails to open is
-        ;; skipped; on-scan's :dapr/abort is raised outside this try, so it still
-        ;; unwinds the whole walk.
-        (if-let [entries (try
-                           (with-open [^DirectoryStream stream (Files/newDirectoryStream dir)]
-                             (vec (iterator-seq (.iterator stream))))
-                           (catch Exception _ nil))]
-          (do
-            (when on-scan (on-scan {:type :listing :count (count entries)}))
-            (let [[child-dirs new-tracks]
-                  (reduce
-                   (fn [acc ^Path p]
-                     (when on-scan (on-scan {:type :entry}))
-                     (if-let [^BasicFileAttributes attrs
-                              (try (Files/readAttributes p BasicFileAttributes (make-array LinkOption 0))
-                                   (catch Exception _ nil))]
-                       (cond
-                         (.isDirectory attrs)
-                         (update acc 0 conj p)
+  Entries that fail to stat are skipped. If `on-scan` throws an ex-info carrying
+  :dapr/abort, the whole walk unwinds (used to cancel a scan whose library is gone)."
+  [^Path root uri ^Path dir extensions on-scan known]
+  (when on-scan (on-scan {:type :dir :rel (relative-key root dir)}))
+  ;; on-scan's :dapr/abort is raised outside this try, so it still unwinds the walk.
+  (when-let [entries (try
+                       (with-open [^DirectoryStream stream (Files/newDirectoryStream dir)]
+                         (vec (iterator-seq (.iterator stream))))
+                       (catch Exception _ nil))]
+    (when on-scan (on-scan {:type :listing :count (count entries)}))
+    (reduce
+     (fn [acc ^Path p]
+       (when on-scan (on-scan {:type :entry}))
+       (if-let [^BasicFileAttributes attrs
+                (try (Files/readAttributes p BasicFileAttributes (make-array LinkOption 0))
+                     (catch Exception _ nil))]
+         (cond
+           (.isDirectory attrs)
+           (update acc 0 conj p)
 
-                         (and (.isRegularFile attrs)
-                              (lib/audio-file? (str (.getFileName p)) extensions))
-                         (let [track (audio-track root uri p attrs known)]
-                           (when on-scan (on-scan {:type :file :track track}))
-                           (update acc 1 conj track))
+           (and (.isRegularFile attrs)
+                (lib/audio-file? (str (.getFileName p)) extensions))
+           (let [track (audio-track root uri p attrs known)]
+             (when on-scan (on-scan {:type :file :track track}))
+             (update acc 1 conj track))
 
-                         :else acc)
-                       acc))
-                   [[] []]
-                   entries)]
+           :else acc)
+         acc))
+     [[] []]
+     entries)))
+
+(def ^:private default-batch-size
+  "Tracks accumulated before an `on-batch` callback fires (see walk-root!). Matches
+  the cache's transaction batch size, so an incremental refresh writes one
+  transaction per batch."
+  256)
+
+(defn- walk-root!
+  "Depth-first walk of `root`, resuming from the directory work `stack` (a vector of
+  Paths, deepest last; `[root]` starts a fresh walk). Driven by an explicit stack
+  rather than call-stack recursion, so an arbitrarily deep tree (or a symlink/
+  junction cycle on a share, which gets no OS ELOOP protection) can't overflow the
+  JVM stack. Each directory is visited via visit-dir!, which reads one attribute set
+  per entry, the same as Files/walkFileTree would.
+
+  Tracks are handed to `on-batch` in batches of `batch-size` rather than returned,
+  so a walk of any size stays memory-bounded (the caller writes them straight into
+  the cache); the walk accumulates only their identities, as `seen`. Those are
+  **physical file** identities [rel size], not the tag-derived domain :key, because
+  `seen` exists to tell the cache which *presences* survive (see
+  dapr.db.cache/reconcile-library-tracks!).
+
+  `pause?`, when supplied, is polled at every directory boundary -- the one point at
+  which no directory stream is open, so the remaining stack is a complete frontier.
+  Once it returns true the pending batch is flushed and the walk returns
+  {:paused? true :stack <remaining> :seen <keys so far>} for a later resume; a walk
+  that finishes returns the same map without :paused? and with an empty stack.
+
+  `on-scan`, when supplied, receives the per-directory/per-file scan events
+  documented on visit-dir!. `known` (rel size -> cached track), when supplied, lets
+  unchanged files reuse their cached tags (see track-tags!)."
+  [^Path root uri extensions {:keys [on-scan known on-batch batch-size pause?]} stack seen]
+  (let [batch-size (or batch-size default-batch-size)
+        flush!     (fn [batch] (when (and on-batch (seq batch)) (on-batch batch)) [])]
+    (loop [stack stack
+           batch []
+           seen  seen]
+      (cond
+        (empty? stack)
+        (do (flush! batch) {:stack [] :seen seen})
+
+        (and pause? (pause?))
+        (do (flush! batch) {:paused? true :stack stack :seen seen})
+
+        :else
+        (let [^Path dir (peek stack)
+              stack     (pop stack)]
+          (if-let [[child-dirs tracks] (visit-dir! root uri dir extensions on-scan known)]
+            (let [batch (into batch tracks)]
               ;; Push children reversed so the first child is popped first (DFS in
               ;; directory order).
               (recur (into stack (rseq child-dirs))
-                     (into tracks new-tracks))))
-          (recur stack tracks))))))
+                     (if (>= (count batch) batch-size) (flush! batch) batch)
+                     (into seen (map (juxt :rel :size)) tracks)))
+            (recur stack batch seen)))))))
 
-(defn catalog!
-  "Scan every `root` URI of a library and return a seq of track maps for each
-  audio file, tagged with the :root it lives under and its :rel path. `on-scan`,
-  when supplied, receives per-directory and per-file scan events (see
-  walk-audio-tracks!) for progress reporting and diagnostics. `known` (rel size ->
-  cached track), when supplied, lets unchanged files reuse their cached tags
-  instead of re-reading them (see walk-audio-tracks!)."
-  ([roots] (catalog! roots nil))
-  ([roots on-scan] (catalog! roots on-scan lib/default-audio-extensions))
-  ([roots on-scan extensions] (catalog! roots on-scan extensions nil))
-  ([roots on-scan extensions known]
-   (mapcat (fn [uri] (walk-audio-tracks! (device-fs/root-path! uri) uri extensions on-scan known)) roots)))
+(defn scan-roots!
+  "Pausable, resumable scan of a library's `roots`. Tracks are streamed to
+  `:on-batch` (a vector of track maps at a time) rather than returned, so a scan of
+  any size stays memory-bounded, and the caller writes each batch straight into the
+  cache (see dapr.db.cache/upsert-library-tracks!).
+
+  Options:
+    :on-scan    per-directory/per-file scan events (see visit-dir!);
+    :extensions audio extensions (defaults to the library default set);
+    :known      (fn [rel size] -> cached track) for tag reuse (see track-tags!);
+    :on-batch   (fn [tracks]) called per batch of scanned tracks;
+    :batch-size tracks per on-batch call;
+    :pause?     (fn [] -> boolean) polled at every directory boundary;
+    :checkpoint a checkpoint from an earlier paused scan, to resume from.
+
+  Returns either
+
+    {:status :complete :seen #{[rel size] ...}}
+
+  -- `seen` being the [rel size] identity of every file found across all roots
+  (the physical key a cached presence carries, *not* the tag-derived domain :key),
+  which is what makes it safe to retract the rest (see
+  dapr.db.cache/reconcile-library-tracks!) -- or
+
+    {:status :paused :checkpoint {:roots [...] :stack [...] :seen #{...}}}
+
+  when `pause?` fired. The checkpoint carries the roots not yet finished (the first
+  being the one in progress), that root's remaining directory frontier, and the keys
+  seen so far; passing it back as `:checkpoint` continues exactly where the walk
+  stopped rather than re-listing directories already visited -- the expensive part
+  over MTP/SMB. It holds live Paths, so it is valid only while the device's
+  FileSystem is open (i.e. within one run of the app), and is deliberately not
+  persisted."
+  [roots {:keys [extensions checkpoint] :as opts}]
+  (let [extensions (or extensions lib/default-audio-extensions)]
+    (loop [pending (vec (or (:roots checkpoint) roots))
+           stack   (:stack checkpoint)
+           seen    (or (:seen checkpoint) #{})]
+      (if (empty? pending)
+        {:status :complete :seen seen}
+        (let [uri  (first pending)
+              root (device-fs/root-path! uri)
+              res  (walk-root! root uri extensions opts (or stack [root]) seen)]
+          (if (:paused? res)
+            {:status     :paused
+             :checkpoint {:roots pending :stack (:stack res) :seen (:seen res)}}
+            (recur (vec (rest pending)) nil (:seen res))))))))
 
 (defn copy-file!
   "Copy file `rel-path` from `src-root` to `dst-root`, creating intermediate

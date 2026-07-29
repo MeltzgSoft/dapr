@@ -6,7 +6,17 @@
  ;; Halt-only component: closes the SMB FileSystem cache and the MTP device bridge on
  ;; shutdown. The renderer refs it so it halts *after* the UI (and any scan) is down.
  :dapr/devices  {}
+ ;; Per-device locks arbitrating the background refresh against foreground user ops.
+ :dapr/coordinator {}
+ ;; The background library refresher. Refs :dapr/devices so it halts *before* the
+ ;; device sessions it scans through are closed, and :dapr/coordinator so the locks
+ ;; it takes outlive it.
+ :dapr/refresher {:state-atom  #ig/ref :dapr/state
+                  :cache       #ig/ref :dapr/cache
+                  :coordinator #ig/ref :dapr/coordinator
+                  :devices     #ig/ref :dapr/devices}
  :dapr/renderer {:state-atom #ig/ref :dapr/state
                  :cache      #ig/ref :dapr/cache
                  :log        #ig/ref :dapr/log
+                 :refresher  #ig/ref :dapr/refresher
                  :devices    #ig/ref :dapr/devices}}

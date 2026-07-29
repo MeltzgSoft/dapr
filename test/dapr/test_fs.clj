@@ -3,9 +3,32 @@
   Path operations over a non-default provider, and real temp directories for the
   URI-driven catalog/sync path (file:// URIs are real and addressable). No mocks
   and no hardware — analogous to the Testcontainers approach used for backends."
+  (:require [dapr.fs.nio :as nio]
+            [dapr.domain.library :as lib])
   (:import (com.google.common.jimfs Configuration Jimfs)
            (java.nio.file FileSystem FileVisitOption Files LinkOption OpenOption Path)
            (java.nio.file.attribute FileAttribute)))
+
+(defn scan-tracks!
+  "Every audio track under `roots`, as a vector — the whole-catalog form of
+  nio/scan-roots!, which the app itself never needs (the refresher streams batches
+  straight into the cache, see dapr.refresh) but assertions do. `opts` are
+  scan-roots!'s, minus :on-batch."
+  ([roots] (scan-tracks! roots {}))
+  ([roots opts]
+   (let [tracks (volatile! [])]
+     (nio/scan-roots! roots (assoc opts :on-batch (fn [batch] (vswap! tracks into batch))))
+     @tracks)))
+
+(defn scan-catalog!
+  "Tracks under `roots` indexed by :key, in the shape the planner and table expect.
+  On a key collision (two roots holding the same relative path + size) the first
+  wins, matching how the app's cache-backed catalogs behave."
+  ([roots] (scan-catalog! roots {}))
+  ([roots opts]
+   (reduce (fn [acc t] (if (contains? acc (lib/track-key t)) acc (assoc acc (lib/track-key t) t)))
+           {}
+           (scan-tracks! roots opts))))
 
 (defn unix-fs
   "Create a fresh in-memory unix FileSystem. Caller must close it."

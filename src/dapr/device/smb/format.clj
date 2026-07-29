@@ -25,6 +25,14 @@
     (str "smb://" (.getAuthority (URI. ^String uri)) "/" (share uri))
     (catch URISyntaxException _ nil)))
 
+;; Not because the driver forces it — jcifs-ng multiplexes concurrent requests over
+;; one connection, and dapr has always run its source and sink scans concurrently
+;; over a shared per-host FileSystem (see dapr.device.smb.fs). It is about priority:
+;; a library walk is thousands of round trips over one network connection, so a sync
+;; running alongside it would crawl. Handing the share to one holder at a time lets
+;; the walk check-point and step aside for the user instead (see dapr.refresh).
+(defmethod device/arbitrate-access? :smb [_] true)
+
 (defmethod device/selectable-root? :smb [uri]
   (and (boolean (device/scheme uri))
        (not (host-root? uri))))

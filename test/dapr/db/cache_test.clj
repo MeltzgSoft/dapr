@@ -220,6 +220,42 @@
         (is (= #{["a.mp3" 1] ["c.mp3" 3]} (set (keys cat))))
         (is (= "A2" (:artist (get cat ["a.mp3" 1]))))))))
 
+(deftest incremental-upsert-and-reconcile-test
+  (let [conn (cache/empty-conn)
+        lib  (cache/upsert-library! conn {:name "L" :roots ["file:///r/"]})]
+    (cache/replace-library-tracks! conn lib [(track "a.mp3" 1 :artist "A" :mtime 10)
+                                             (track "b.mp3" 2 :artist "B" :mtime 20)])
+
+    (testing "a partial (paused) scan's upserts never retract what it hasn't reached"
+      ;; The batch holds only the first directory's tracks; b.mp3 is unvisited, and
+      ;; must survive — a checkpointed refresh leaves the cache a stale superset.
+      (cache/upsert-library-tracks! conn lib [(track "a.mp3" 1 :artist "A2" :mtime 11)])
+      (let [cat (by-file (cache/library-catalog (d/db conn) lib))]
+        (is (= #{["a.mp3" 1] ["b.mp3" 2]} (set (keys cat))))
+        (is (= "A2" (:artist (get cat ["a.mp3" 1]))))))
+
+    (testing "a new track is added by an incremental batch"
+      (cache/upsert-library-tracks! conn lib [(track "c.mp3" 3 :artist "C" :mtime 30)])
+      (is (= #{["a.mp3" 1] ["b.mp3" 2] ["c.mp3" 3]}
+             (set (keys (by-file (cache/library-catalog (d/db conn) lib)))))))
+
+    (testing "reconciling against a completed scan's seen set retracts only what's gone"
+      (cache/reconcile-library-tracks! conn lib #{["a.mp3" 1] ["c.mp3" 3]})
+      (is (= #{["a.mp3" 1] ["c.mp3" 3]}
+             (set (keys (by-file (cache/library-catalog (d/db conn) lib)))))))
+
+    (testing "reconciling an unchanged set transacts nothing"
+      (let [n    (atom 0)
+            orig d/transact!]
+        (with-redefs [d/transact! (fn [& args] (swap! n inc) (apply orig args))]
+          (cache/reconcile-library-tracks! conn lib #{["a.mp3" 1] ["c.mp3" 3]}))
+        (is (zero? @n))))
+
+    (testing "an incremental batch still refuses to downgrade embedded tags"
+      (cache/upsert-library-tracks! conn lib [(track "e.mp3" 5 :artist "Real" :source :embedded)])
+      (cache/upsert-library-tracks! conn lib [(track "e.mp3" 5 :artist "Guess" :source :path)])
+      (is (= "Real" (:artist (get (by-file (cache/library-catalog (d/db conn) lib)) ["e.mp3" 5])))))))
+
 (deftest presence-sharing-test
   (let [conn (cache/empty-conn)
         a    (cache/upsert-library! conn {:name "A" :roots ["file:///a/"]})
