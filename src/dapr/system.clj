@@ -6,11 +6,13 @@
   (:require [cljfx.api :as fx]
             [clojure.java.io :as io]
             [dapr.db.cache :as cache]
+            [dapr.device.coordinator :as coord]
             [dapr.device.mtp.fs :as mtp-fs]
             [dapr.device.smb.fs :as smb-fs]
             [dapr.library.store :as store]
             [dapr.log :as log]
             [dapr.db.migrations :as migrations]
+            [dapr.refresh :as refresh]
             [dapr.state :as state]
             [dapr.ui.events :as events]
             [dapr.ui.views :as views]
@@ -78,6 +80,26 @@
   (smb-fs/close-all!)
   (mtp-fs/close!))
 
+(defmethod ig/init-key :dapr/coordinator [_ _]
+  ;; Like :dapr/devices, this owns no state of its own: the per-device locks are
+  ;; process-globals (device access is reached through the java.nio provider SPI,
+  ;; which carries no component context — see dapr.device.coordinator). The
+  ;; component exists so a fresh system starts with no device held, and so the
+  ;; refresher can depend on it.
+  (coord/reset-locks!)
+  {})
+
+(defmethod ig/halt-key! :dapr/coordinator [_ _]
+  (coord/reset-locks!))
+
+(defmethod ig/init-key :dapr/refresher [_ {:keys [state-atom cache]}]
+  (refresh/start! {:state-atom state-atom :cache cache}))
+
+(defmethod ig/halt-key! :dapr/refresher [_ refresher]
+  ;; Ordered before :dapr/devices (which this component refs), so the worker has
+  ;; left the device before its session is closed.
+  (refresh/stop! refresher))
+
 (defn- color-scheme->kw
   "Map a javafx.application.ColorScheme to :dark/:light (nil when unrecognized)."
   [cs]
@@ -103,16 +125,17 @@
                          (changed [_ _ _ new-val] (record! new-val)))))
        (catch Throwable _)))))
 
-(defmethod ig/init-key :dapr/renderer [_ {:keys [state-atom cache]}]
-  (let [handler  (events/make-handler state-atom cache)
+(defmethod ig/init-key :dapr/renderer [_ {:keys [state-atom cache refresher]}]
+  (let [handler  (events/make-handler state-atom cache refresher)
         renderer (fx/create-renderer
                   :middleware (fx/wrap-map-desc (fn [s] (views/root-view s)))
                   :opts {:fx.opt/map-event-handler handler})]
     (fx/mount-renderer state-atom renderer)
     ;; Follow the OS colour scheme so the :system theme tracks it live.
     (watch-os-color-scheme! state-atom)
-    ;; Kick off the initial catalog load for any persisted default source/sink.
-    (events/start! state-atom cache)
+    ;; Paint any persisted default source/sink from the cache and queue the
+    ;; background refresh of every library.
+    (events/start! state-atom cache refresher)
     {:renderer renderer :state-atom state-atom}))
 
 (defmethod ig/halt-key! :dapr/renderer [_ {:keys [renderer state-atom]}]

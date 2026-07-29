@@ -2,10 +2,18 @@
   "Side-effecting event handlers for the cljfx UI. Pure state transitions live in
   dapr.state; filesystem work lives in dapr.fs.nio / dapr.sync; library and scan
   persistence in dapr.db.cache. Each handler runs on the JavaFX Application Thread,
-  so long-running scans/copies are dispatched to background threads to keep the
-  UI responsive."
+  so long-running copies are dispatched to background threads to keep the UI
+  responsive.
+
+  No handler scans a device. The table is always painted from the cache
+  (dapr.library.catalogs) and all walking is owned by the background refresher
+  (dapr.refresh), which a selection change merely re-prioritizes. The only
+  foreground device work left is the sync's copies/deletes and the sink's
+  free-space query, both taken under the device lock (dapr.device.coordinator) so
+  they preempt an in-flight refresh."
   (:require [clojure.java.io :as io]
             [dapr.db.cache :as cache]
+            [dapr.device.coordinator :as coord]
             [dapr.device.events :as device-events]
             [dapr.device.file.events]
             [dapr.device.format :as device]
@@ -14,7 +22,9 @@
             [dapr.device.smb.events]
             [dapr.domain.library :as lib]
             [dapr.domain.plan :as plan]
+            [dapr.library.catalogs :as catalogs]
             [dapr.log :as log]
+            [dapr.refresh :as refresh]
             [dapr.state :as state]
             [dapr.sync :as sync]
             [dapr.ui.format :as fmt]
@@ -48,172 +58,58 @@
     (t/log! {:level :error :error t :msg (str prefix summary)})
     (swap! state-atom state/set-error summary)))
 
-(defn- scan-logger
-  "Scan-event callback that logs progress, tagged with the library being scanned.
-  Each directory entered is logged at :info (the last such line before a freeze
-  pinpoints the directory whose listing hung); per-file lines are :debug (filtered
-  from the file/UI by default, see dapr.log) since the progress bar already tracks
-  file-level progress."
-  [label]
-  (let [scanned (atom 0)]
-    (fn [{:keys [type rel track]}]
-      (case type
-        :dir  (t/log! (format "  [%s] scanning %s/" label (if (= "" rel) "" rel)))
-        :file (let [n (swap! scanned inc)]
-                (t/log! :debug (format "  [%s] #%d %s" label n (or (:rel track) (:name track)))))
-        nil))))
+(defn- paint-catalogs!
+  "Repaint the source/sink catalogs from the cache — no device walk (see
+  dapr.library.catalogs/paint!). `preselect?` pre-selects the tracks already on the
+  sink, which is what a *fresh* source/sink choice wants; a repaint mid-session
+  passes false so the user's ticks survive."
+  [state-atom {:keys [conn]} preselect?]
+  (try
+    (when-let [{:keys [source sink free]} (catalogs/paint! state-atom conn {:preselect? preselect?})]
+      (t/log! (format "Source %d · Sink %d tracks · %s free."
+                      source sink (fmt/human-bytes free))))
+    (catch Throwable t
+      (log-error! state-atom "Loading the catalogs failed: " t))))
 
-(defn- begin-scan!
-  "Start a new scan generation, superseding any in-flight one. Returns a
-  `superseded?` predicate that becomes true once a later scan begins."
-  [state-atom]
-  (let [gen (:scan-gen (swap! state-atom update :scan-gen inc))]
-    (fn [] (not= gen (:scan-gen @state-atom)))))
+(defn- select-libraries!
+  "React to a new source/sink choice: paint their tracks from the cache instantly,
+  then push them to the front of the background refresh queue. Runs off the JFX
+  thread (the free-space query can block on the device).
 
-(defn- superseded-ex?
-  "True when `t` (or any of its causes) is the marker thrown to abort a scan that
-  a newer one has superseded."
-  [t]
-  (boolean (some #(:dapr/abort (ex-data %))
-                 (take-while some? (iterate #(some-> ^Throwable % .getCause) t)))))
-
-(def ^:private progress-update-stride
-  "Publish scan progress to the UI only every Nth visited entry (plus on every
-  directory listing), so a large scan advances the progress bar steadily without a
-  state swap — and re-render — for every single file."
-  64)
-
-(defn- begin-progress!
-  "Reset the UI progress bar and return a fresh shared accumulator {:done :total}
-  that the (possibly concurrent) source and sink scans both feed."
-  [state-atom]
-  (swap! state-atom state/set-progress {:done 0 :total 0})
-  (atom {:done 0 :total 0}))
-
-(defn- scan-progress!
-  "Fold one scan event into the shared `prog` accumulator and, on a throttled
-  cadence, publish it to state's :progress so the bar advances. :listing events
-  grow the total by a directory's child count (so the total climbs as the walk
-  recurses deeper); :entry events advance done toward it."
-  [state-atom prog ev]
-  (case (:type ev)
-    :listing (let [p (swap! prog update :total + (:count ev))]
-               (swap! state-atom state/set-progress (select-keys p [:done :total])))
-    :entry   (let [p (swap! prog update :done inc)]
-               (when (zero? (mod (:done p) progress-update-stride))
-                 (swap! state-atom state/set-progress (select-keys p [:done :total]))))
-    nil))
-
-(defn- scan-callback
-  "An on-scan callback that accumulates overall scan progress into `prog` and logs
-  progress (see scan-logger), but first aborts the walk, by throwing, once
-  `superseded?` reports a newer scan has started."
-  [state-atom label superseded? prog]
-  (let [log (scan-logger label)]
-    (fn [ev]
-      (when (superseded?)
-        (throw (ex-info "scan superseded" {:dapr/abort true})))
-      (scan-progress! state-atom prog ev)
-      (log ev))))
-
-(defn- set-catalogs-from-cache!
-  "Replace the source/sink catalogs in state with the cache's current view (no
-  walk). Sink free space is the one uncached input, so it is read — a usable-space
-  query, not a walk. Pre-selects tracks already on the sink (state/set-catalogs)."
-  [state-atom conn src snk]
-  (swap! state-atom state/set-catalogs
-         (cache/library-catalog (d/db conn) (:id src))
-         (cache/library-catalog (d/db conn) (:id snk))
-         (sync/library-free! snk)))
-
-(defn- load-cached-catalogs!
-  "Instant first paint of the source/sink catalogs from the cache, before the
-  background refresh re-scans (see reload-catalogs!). `snk` may be nil — a source
-  chosen without a sink shows the source's tracks alone (the sink catalog and free
-  space come back empty/0, see set-catalogs-from-cache!)."
-  [state-atom conn src snk]
-  (set-catalogs-from-cache! state-atom conn src snk)
-  (t/log! (if snk
-            (format "Loaded '%s' → '%s' from cache; refreshing…" (:name src) (:name snk))
-            (format "Loaded '%s' (no sink) from cache; refreshing…" (:name src)))))
-
-(defn- reload-catalogs!
-  "Refresh the source/sink catalogs. First loads them instantly from the cache so
-  the table renders right away, then re-scans the libraries in the background
-  (reusing cached tags for unchanged files), updates the cache, and refreshes the
-  catalogs + capacity. Pre-selects tracks already on the sink (via
-  state/set-catalogs). Supersedes any refresh still running from an earlier
-  source/sink change.
-
-  Runs whenever a source is chosen, with or without a sink: a sink-less source
-  shows its tracks alone (empty sink catalog, 0 free, nothing pre-selected) so the
-  table is populated for browsing before a sink is picked — Preview/Sync stay
-  disabled until both are set (see fmt/can-preview?)."
-  [state-atom {:keys [conn path]}]
-  (let [s   @state-atom
-        src (state/library-by-id s (:source-id s))
-        snk (state/library-by-id s (:sink-id s))]
-    (when src
-      ;; Bump the scan generation *before* painting from the cache, so any scan
-      ;; still in flight from an earlier selection is superseded and can't swap its
-      ;; now-stale catalogs in after this refresh has started.
-      (let [superseded? (begin-scan! state-atom)
-            prog        (begin-progress! state-atom)]
-        (load-cached-catalogs! state-atom conn src snk)
-        (swap! state-atom state/set-status :scanning)
-        (try
-          ;; Scan source and sink concurrently — melt-jfs serializes per device, so
-          ;; this overlaps work whenever they are on different devices (the common
-          ;; case: one local, one MTP) and is harmless when they share one. Both feed
-          ;; the one shared progress accumulator and reconcile their own cache entry.
-          ;; With no sink, only the source is scanned.
-          (let [src-fut (future (sync/scan-into-cache! conn (:id src) src
-                                                       (scan-callback state-atom (:name src) superseded? prog)))
-                snk-cat (when snk
-                          (sync/scan-into-cache! conn (:id snk) snk
-                                                 (scan-callback state-atom (:name snk) superseded? prog)))
-                src-cat @src-fut
-                snk-cat (or snk-cat {})
-                free    (if snk (sync/library-free! snk) 0)]
-            (cache/snapshot! conn path)
-            (when-not (superseded?)
-              (swap! state-atom
-                     (fn [s] (-> s
-                                 (state/set-catalogs src-cat snk-cat free)
-                                 (state/set-progress nil)
-                                 (state/set-status :idle))))
-              (t/log! (format "Source %d · Sink %d tracks · %s free."
-                              (count src-cat) (count snk-cat) (fmt/human-bytes free)))))
-          (catch Throwable t
-            (when-not (superseded-ex? t)
-              (log-error! state-atom "Scan failed: " t))))))))
+  Works with or without a sink: a sink-less source shows its tracks alone (empty
+  sink catalog, 0 free, nothing pre-selected) so the table is browsable before a
+  sink is picked — Preview/Sync stay disabled until both are set (see
+  fmt/can-preview?)."
+  [state-atom cache refresher]
+  (paint-catalogs! state-atom cache true)
+  (let [s @state-atom]
+    (refresh/prioritize! refresher [(:source-id s) (:sink-id s)])))
 
 (defn- run-preview!
-  "Compute the selection plan and move to :planned. Reuses the catalogs already
-  scanned into state when the source/sink were chosen (see reload-catalogs!), so
-  previewing doesn't re-walk the libraries — only the sink's per-root free space
-  is re-read, which is cheap. Falls back to a fresh scan only if a catalog is
-  empty (e.g. the selection scan is still in flight)."
+  "Compute the selection plan from the catalogs already in state and move to
+  :planned. Purely cache-driven — the libraries are never re-walked here; the only
+  device touch is the sink's per-root free space, which the placement math needs
+  and which is taken under the sink's device lock so it preempts a running
+  refresh."
   [state-atom]
   (let [{:keys [source-catalog sink-catalog selected] :as s} @state-atom
         src       (state/library-by-id s (:source-id s))
         snk       (state/library-by-id s (:sink-id s))
-        handling  (state/setting s :sink-only-handling :keep)
-        src-roots (when (= handling :add-to-source) (sync/library-roots! src))]
+        handling  (state/setting s :sink-only-handling :keep)]
     (swap! state-atom state/set-status :scanning)
     (t/log! "Computing plan…")
     (try
-      (let [actions (if (and (seq source-catalog) (seq sink-catalog))
-                      (plan/selection-plan {:source-catalog     source-catalog
-                                            :sink-catalog       sink-catalog
-                                            :selected           selected
-                                            :sink-roots         (sync/sink-roots! snk)
-                                            :sink-only-handling handling
-                                            :source-roots       src-roots})
-                      (sync/build-plan! src snk selected
-                                        {:sink-only-handling handling
-                                         :source-roots       src-roots}))
-            summ    (plan/summary actions)]
+      (let [src-roots (when (= handling :add-to-source)
+                        (coord/with-device! (coord/library-device src) #(sync/library-roots! src)))
+            actions   (plan/selection-plan
+                       {:source-catalog     source-catalog
+                        :sink-catalog       sink-catalog
+                        :selected           selected
+                        :sink-roots         (coord/with-device! (coord/library-device snk)
+                                              #(sync/library-roots! snk))
+                        :sink-only-handling handling
+                        :source-roots       src-roots})
+            summ      (plan/summary actions)]
         (swap! state-atom (fn [s] (-> s
                                       (state/set-plan actions summ)
                                       (state/set-progress nil))))
@@ -221,26 +117,33 @@
       (catch Throwable t
         (log-error! state-atom "Plan failed: " t)))))
 
-(defn- run-sync! [state-atom {:keys [conn path]}]
+(defn- run-sync!
+  "Execute the planned copies/deletes. The whole execution holds both libraries'
+  device locks (dedup'd to one when they share a device), so a background refresh
+  check-points and gets out of the way for the duration instead of interleaving
+  with the transfer."
+  [state-atom {:keys [conn path] :as cache}]
   (let [{:keys [source-catalog sink-catalog source-id sink-id] :as s0} @state-atom
-        actions (get-in s0 [:plan :actions])]
+        actions (get-in s0 [:plan :actions])
+        src     (state/library-by-id s0 source-id)
+        snk     (state/library-by-id s0 sink-id)]
     (swap! state-atom state/set-status :syncing)
     (t/log! "Syncing…")
     (try
-      (let [result (sync/execute-plan!
-                    actions
-                    {:on-progress (fn [p] (swap! state-atom state/set-progress
-                                                 (select-keys p [:done :total])))})]
+      (let [result (coord/with-devices!
+                     [(coord/library-device src) (coord/library-device snk)]
+                     (fn []
+                       (sync/execute-plan!
+                        actions
+                        {:on-progress (fn [p] (swap! state-atom state/set-progress
+                                                     (select-keys p [:done :total])))})))]
         ;; Update the sink's cache entry directly from the executed plan, so a
         ;; sync needs no re-walk; then refresh the catalogs from the cache.
         (sync/apply-plan-to-cache! conn sink-id source-catalog actions)
         ;; Register copied-back sink-only tracks (:add-to-source) on the source.
         (sync/apply-source-adds-to-cache! conn source-id sink-catalog actions)
         (cache/snapshot! conn path)
-        (let [s   @state-atom
-              src (state/library-by-id s source-id)
-              snk (state/library-by-id s sink-id)]
-          (when (and src snk) (set-catalogs-from-cache! state-atom conn src snk)))
+        (paint-catalogs! state-atom cache true)
         (swap! state-atom (fn [s] (-> s
                                       (state/set-status :done)
                                       (state/set-progress nil))))
@@ -248,6 +151,25 @@
                         (:add result) (:delete result) (:add-to-source result))))
       (catch Throwable t
         (log-error! state-atom "Sync failed: " t)))))
+
+(def ^:private sync-confirm
+  "Confirmation shown when a sync would run against a library whose background
+  refresh hasn't finished this session. Its cached catalog is then a *superset* of
+  what is really on the device (nothing is retracted until a walk completes), so a
+  plan built from it can try to copy a track that has since been deleted, or skip
+  one it wrongly believes is already on the sink."
+  {:kind         :sync
+   :title        "Refresh still in progress"
+   :confirm-text "Sync anyway"})
+
+(defn- sync-confirmation
+  "The confirmation to show before syncing `state`, or nil when both libraries have
+  completed a refresh this session and the plan can be trusted."
+  [state]
+  (when-let [libs (seq (state/sync-incomplete-libraries state))]
+    (assoc sync-confirm
+           :message (format "Still refreshing %s, so the track list may not match what is on the device. Sync anyway?"
+                            (fmt/name-list (map :name libs))))))
 
 (defn- probe-availability!
   "Probe each library's device reachability off the JFX thread and record an
@@ -262,21 +184,29 @@
     (swap! state-atom state/set-library-availability avail)))
 
 (defn- refresh-availability!
-  "Re-probe availability, then drop any source/sink selection that has become
-  unavailable (and reload the remaining catalogs). Used at launch and on the
-  manual refresh action."
-  [state-atom cache]
+  "Re-probe availability, drop any source/sink selection that has become
+  unavailable, repaint the remaining catalogs from the cache, and re-queue a
+  background refresh of every library. Used at launch and by the ↻ Refresh button —
+  which is therefore also how a user forces an already-completed library to be
+  re-walked (see refresh/refresh-all!)."
+  [state-atom cache refresher]
   (probe-availability! state-atom)
   (swap! state-atom (fn [s] (state/clear-unavailable-selection s (:library-availability s))))
   (when (:source-id @state-atom)
-    (reload-catalogs! state-atom cache)))
+    (paint-catalogs! state-atom cache false))
+  (refresh/refresh-all! refresher))
 
 (defn start!
   "Once the UI is mounted, probe library availability, drop any pre-selected
-  default whose device is unreachable, then load the source's tracks if a source
-  remains selected (see reload-catalogs!)."
-  [state-atom cache]
-  (future (refresh-availability! state-atom cache)))
+  default whose device is unreachable, paint the source's tracks from the cache
+  (instant, no walk), and kick off the background refresh."
+  [state-atom cache refresher]
+  (future
+    (probe-availability! state-atom)
+    (swap! state-atom (fn [s] (state/clear-unavailable-selection s (:library-availability s))))
+    (when (:source-id @state-atom)
+      (paint-catalogs! state-atom cache true))
+    (refresh/refresh-all! refresher)))
 
 (def ^:private mixed-device-msg
   "A library's roots must all live on one device — remove the existing roots first to switch device.")
@@ -370,9 +300,10 @@
         (.play p)))))
 
 (defn make-handler
-  "Return a cljfx event handler closing over `state-atom` and the `cache`
-  component {:conn :path} that owns library/scan persistence."
-  [state-atom {:keys [conn] :as cache}]
+  "Return a cljfx event handler closing over `state-atom`, the `cache` component
+  {:conn :path} that owns library/scan persistence, and the background `refresher`
+  that owns all device scanning."
+  [state-atom {:keys [conn] :as cache} refresher]
   (reset! state-atom* state-atom)
   (fn [event]
     (case (:event/type event)
@@ -397,7 +328,9 @@
                                 (assoc l :device/type (device/device-type (first (:roots l))))))
       ::library-delete (do (cache/delete-library! conn (:id event))
                            (cache/snapshot! conn (:path cache))
-                           (swap! state-atom state/delete-library (:id event))
+                           (swap! state-atom (fn [s] (-> s
+                                                         (state/delete-library (:id event))
+                                                         (state/forget-refresh (:id event)))))
                            (refresh-libraries! state-atom conn)
                            (future (probe-availability! state-atom)))
       ;; Mark/clear a library as the default source or sink (applied at next
@@ -441,21 +374,25 @@
       ::editor-save
       (let [library (select-keys (:editor @state-atom) [:id :name :roots])]
         (if (lib/library-valid? library)
-          (do (cache/upsert-library! conn library)
-              (cache/snapshot! conn (:path cache))
-              (refresh-libraries! state-atom conn)
-              (swap! state-atom state/cancel-editor)
-              (future (probe-availability! state-atom)))
+          (let [lib-id (cache/upsert-library! conn library)]
+            (cache/snapshot! conn (:path cache))
+            (refresh-libraries! state-atom conn)
+            (swap! state-atom state/cancel-editor)
+            ;; A new or re-rooted library needs a walk before its cache means
+            ;; anything, so queue one.
+            (refresh/enqueue! refresher lib-id)
+            (future (probe-availability! state-atom)))
           (t/log! "Library needs a name and at least one file://, mtp:// or smb:// root.")))
       ::editor-cancel (swap! state-atom state/cancel-editor)
 
-      ;; sync workflow
+      ;; sync workflow — a selection paints from the cache and re-prioritizes the
+      ;; background refresh; it never scans (see select-libraries!).
       ::select-source (do (swap! state-atom state/select-source
                                  (library-id-by-name state-atom (:fx/event event)))
-                          (future (reload-catalogs! state-atom cache)))
+                          (future (select-libraries! state-atom cache refresher)))
       ::select-sink   (do (swap! state-atom state/select-sink
                                  (library-id-by-name state-atom (:fx/event event)))
-                          (future (reload-catalogs! state-atom cache)))
+                          (future (select-libraries! state-atom cache refresher)))
       ::toggle-track  (swap! state-atom state/toggle-track (:key event))
 
       ;; column-browser facets — single click filters (see facet-click!), double
@@ -464,9 +401,20 @@
       ::facet-click-album    (facet-click! state-atom :album (:fx/event event))
       ::filter-search-artist (swap! state-atom state/set-filter-search :artist (:fx/event event))
       ::filter-search-album  (swap! state-atom state/set-filter-search :album (:fx/event event))
-      ::refresh-availability (future (refresh-availability! state-atom cache))
+      ::refresh-availability (future (refresh-availability! state-atom cache refresher))
       ::preview       (future (run-preview! state-atom))
-      ::sync          (future (run-sync! state-atom cache))
+
+      ;; Sync is gated on both libraries having completed a refresh this session:
+      ;; until then their cached catalogs are supersets of the devices (see
+      ;; sync-confirmation), so the user is asked first.
+      ::sync          (if-let [confirm (sync-confirmation @state-atom)]
+                        (swap! state-atom state/open-confirm confirm)
+                        (future (run-sync! state-atom cache)))
+      ;; No re-check on confirm: if the refresh finished while the dialog was open
+      ;; the sync is simply safer than advertised, and the user has already said go.
+      ::sync-confirm  (do (swap! state-atom state/close-confirm)
+                          (future (run-sync! state-atom cache)))
+      ::confirm-cancel (swap! state-atom state/close-confirm)
 
       ;; logging — the live log window + its log-dir picker
       ::view-logs      (swap! state-atom state/open-log)

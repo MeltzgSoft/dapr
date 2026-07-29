@@ -72,24 +72,28 @@ src/dapr/
   device/          per-scheme behaviour, keyed on the root URI scheme
     format.clj    pure  scheme multimethods (device-type, labels, supported?)
     fs.clj        I/O   root-path!/dir-children!/available? multimethods
+    coordinator.clj I/O per-device locks; user ops preempt the refresher
     tag.clj       I/O   tags! multimethod (embedded vs path-derived); default is path
     events.clj    I/O   folder-browser event multimethods (setup/connect/list)
     views.clj     pure  device-specific view extension points + shared browser
     file/ smb/ mtp/    each: fs, format, events, views (+ tag for file & mtp)
   fs/
-    nio.clj        I/O   catalog!, copy!/delete!, capacity & device queries
+    nio.clj        I/O   scan-roots! (resumable walk), copy!/delete!, capacity
     credentials.clj I/O  SMB per-host credentials in the OS secure keystore
     paths.clj      I/O   config-dir / user-home resolution
   library/
     store.clj      I/O   load!/save! libraries as EDN under the config dir
-  sync.clj         I/O   build-plan! + execute-plan! with progress callback
+    catalogs.clj   I/O   paint state's catalogs from the cache (no device walk)
+  refresh.clj      I/O   background refresher: resumable walks into the cache
+  sync.clj         I/O   execute-plan! with progress callback + cache follow-up
   log.clj          I/O   Telemere handlers: rolling log file + live-window buffer
   state.clj        pure  state-transition fns over a single state map
   ui/
     format.clj     pure  formatting + derived predicates (no JavaFX)
     views.clj      pure  cljfx view descriptions (data)
-    events.clj     I/O   event handlers: swap! state, scans/copies, persistence
-  system.clj       Integrant components: cache, state atom, log, devices, renderer
+    events.clj     I/O   event handlers: swap! state, copies, persistence
+  system.clj       Integrant components: cache, state, log, devices,
+                   coordinator, refresher, renderer
   main.clj         entry point
 resources/{config.edn, dark.css, light.css}  Integrant system map + themes
 ```

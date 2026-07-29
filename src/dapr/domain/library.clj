@@ -18,10 +18,6 @@
             [dapr.device.mtp.format]
             [dapr.device.smb.format]))
 
-(def supported-schemes
-  "URI schemes a library root may use."
-  (set (map name device/types)))
-
 (def default-audio-extensions
   "File extensions (lowercase, no dot) treated as tracks by default."
   #{"mp3" "flac" "m4a" "aac" "ogg" "opus" "wav" "wma"})
@@ -74,16 +70,6 @@
   matches across roots/devices."
   [{:keys [artist album title size rel]}]
   [artist album title size rel])
-
-(defn catalog
-  "Index a seq of tracks by :key into a catalog map. On a key collision (two
-  roots holding the same tags + size + relative path) the first wins."
-  [tracks]
-  (reduce (fn [acc t]
-            (let [k (track-key t)]
-              (if (contains? acc k) acc (assoc acc k t))))
-          {}
-          tracks))
 
 (defn track-total-size
   "Total bytes of a seq of tracks (e.g. the vals of a catalog)."

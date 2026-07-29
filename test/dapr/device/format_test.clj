@@ -32,6 +32,17 @@
     (is (false? (device/supported-root? "http://example.com")))
     (is (false? (device/supported-root? "/plain/path")))))
 
+(deftest arbitrate-access?-test
+  (testing "slow devices are handed out one holder at a time (dapr.device.coordinator):
+            mtp:// because its driver serializes access, smb:// because a walk would
+            saturate the one connection a sync also needs"
+    (is (true? (device/arbitrate-access? :mtp)))
+    (is (true? (device/arbitrate-access? :smb))))
+  (testing "local files are fast and parallel-safe, so they are never locked"
+    (is (false? (device/arbitrate-access? :file))))
+  (testing "an undeclared device type defaults to being arbitrated"
+    (is (true? (device/arbitrate-access? :future-device)))))
+
 (deftest root-device-key-test
   (testing "all file:// roots share one key, each MTP device gets its own"
     (is (= "file" (device/root-device-key "file:///music")))

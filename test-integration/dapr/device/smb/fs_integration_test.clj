@@ -34,7 +34,8 @@
             [clojure.test :refer [deftest is testing use-fixtures]]
             [dapr.device.fs :as device-fs]
             [dapr.device.smb.fs :as smb]
-            [dapr.fs.nio :as nio])
+            [dapr.fs.nio :as nio]
+            [dapr.test-fs :as tfs])
   (:import (java.nio.file FileSystem Files Path)
            (java.nio.file.attribute FileAttribute)
            (org.testcontainers.containers FixedHostPortGenericContainer)
@@ -152,10 +153,10 @@
         size     (count (.getBytes ^String content))
         src-root (seed-local! rel content)
         dst-root (device-fs/root-path! url)
-        present? (fn [] (some #(= rel (:rel %)) (nio/catalog! [url])))]
+        present? (fn [] (some #(= rel (:rel %)) (tfs/scan-tracks! [url])))]
     (try
       (nio/copy-file! src-root dst-root rel)
-      (let [track (first (filter #(= rel (:rel %)) (nio/catalog! [url])))]
+      (let [track (first (filter #(= rel (:rel %)) (tfs/scan-tracks! [url])))]
         (is (some? track) (str "copied track '" rel "' should be discovered by catalog!"))
         (is (= size (:size track)) "track size should match the copied content"))
       (finally

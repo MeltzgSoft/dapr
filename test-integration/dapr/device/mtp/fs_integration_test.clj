@@ -15,7 +15,8 @@
             [dapr.device.fs :as device-fs]
             [dapr.device.mtp.fs :as mtp]
             [dapr.device.mtp.require-device :as require-device]
-            [dapr.fs.nio :as nio])
+            [dapr.fs.nio :as nio]
+            [dapr.test-fs :as tfs])
   (:import (java.nio.file Files)
            (java.nio.file.attribute FileAttribute)))
 
@@ -79,11 +80,11 @@
             (spit (str local-file) content)
             (try
               (nio/copy-file! (device-fs/root-path! (str (.toUri local))) dst-root rel)
-              (let [track (first (filter #(= file-name (:rel %)) (nio/catalog! [test-url])))]
+              (let [track (first (filter #(= file-name (:rel %)) (tfs/scan-tracks! [test-url])))]
                 (is (some? track) "copied track should be discovered by catalog!")
                 (is (= size (:size track)) "catalog should report the copied file's size"))
               (nio/delete-file! dst-root rel)
-              (is (not (some #(= file-name (:rel %)) (nio/catalog! [test-url])))
+              (is (not (some #(= file-name (:rel %)) (tfs/scan-tracks! [test-url])))
                   "track should be gone after delete-file!")
               (finally
                 ;; Best-effort teardown even if an assertion above threw: remove the

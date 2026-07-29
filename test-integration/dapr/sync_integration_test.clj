@@ -1,5 +1,6 @@
 (ns dapr.sync-integration-test
   (:require [clojure.test :refer [deftest is testing]]
+            [dapr.domain.plan :as plan]
             [dapr.sync :as sync]
             [dapr.test-fs :as tfs]))
 
@@ -8,10 +9,25 @@
   in `rels`. Derived from a real scan so the selection matches however the scanner
   tags each file, rather than hard-coding the tag-derived key shape."
   [lib rels]
-  (->> (sync/catalog-of! lib) vals
+  (->> (tfs/scan-catalog! (:roots lib)) vals
        (filter #(contains? (set rels) (:rel %)))
        (map :key)
        set))
+
+(defn- plan-for!
+  "The plan the app would compute for `selected` over two real directories: both
+  catalogs scanned off disk and handed to the pure planner, exactly as
+  dapr.ui.events/run-preview! does (it reads the catalogs from the cache the
+  background refresher fills, see dapr.library.catalogs). `opts` add
+  :sink-only-handling / :source-roots."
+  ([src-lib snk-lib selected] (plan-for! src-lib snk-lib selected nil))
+  ([src-lib snk-lib selected opts]
+   (plan/selection-plan
+    (merge {:source-catalog (tfs/scan-catalog! (:roots src-lib))
+            :sink-catalog   (tfs/scan-catalog! (:roots snk-lib))
+            :selected       selected
+            :sink-roots     (sync/library-roots! snk-lib)}
+           opts))))
 
 (deftest selective-sync-end-to-end-test
   (testing "add and delete make the sink hold exactly the selected tracks"
@@ -32,7 +48,7 @@
               selected (keys-for src-lib #{"a.mp3" "Album/b.mp3" "c.mp3"})
               ;; :delete handling so the sink-only old/b.mp3 + d.mp3 are removed
               ;; (the default :keep would retain them — see sink-only-add-to-source-test).
-              actions  (sync/build-plan! src-lib snk-lib selected {:sink-only-handling :delete})
+              actions  (plan-for! src-lib snk-lib selected {:sink-only-handling :delete})
               progress (atom [])
               result   (sync/execute-plan!
                         actions {:on-progress (fn [p] (swap! progress conj (:done p)))})]
@@ -47,7 +63,7 @@
           (testing "progress reported once per performed action"
             (is (= [1 2 3 4] @progress)))
           (testing "re-planning the same selection is a no-op"
-            (let [again (sync/build-plan! src-lib snk-lib selected)]
+            (let [again (plan-for! src-lib snk-lib selected)]
               (is (every? #(= :skip (:op %)) again)))))
         (finally
           (tfs/delete-tree! src-dir)
@@ -65,9 +81,9 @@
         (let [src-lib    {:id "s" :name "S" :roots [(tfs/uri-of src-dir)]}
               snk-lib    {:id "k" :name "K" :roots [(tfs/uri-of snk-dir)]}
               src-roots  (sync/library-roots! src-lib)
-              actions    (sync/build-plan! src-lib snk-lib (keys-for src-lib #{"a.mp3"})
-                                           {:sink-only-handling :add-to-source
-                                            :source-roots       src-roots})
+              actions    (plan-for! src-lib snk-lib (keys-for src-lib #{"a.mp3"})
+                                    {:sink-only-handling :add-to-source
+                                     :source-roots       src-roots})
               result     (sync/execute-plan! actions)]
           (testing "op counts: one copy back to the source, nothing deleted"
             (is (= {:add 0 :add-to-source 1 :delete 0} result)))
@@ -90,7 +106,7 @@
         (tfs/write! (.resolve snk-sd "foo/bar/file.mp3") "data")
         (let [src-lib  {:id "s" :name "S" :roots [(tfs/uri-of src-root)]}
               snk-lib  {:id "k" :name "K" :roots [(tfs/uri-of snk-int) (tfs/uri-of snk-sd)]}
-              actions  (sync/build-plan! src-lib snk-lib (keys-for src-lib #{"foo/bar/file.mp3"}))
+              actions  (plan-for! src-lib snk-lib (keys-for src-lib #{"foo/bar/file.mp3"}))
               result   (sync/execute-plan! actions)]
           (testing "the track is considered present -> skip, nothing transferred"
             (is (every? #(= :skip (:op %)) actions))
@@ -102,15 +118,3 @@
           (tfs/delete-tree! snk-int)
           (tfs/delete-tree! snk-sd))))))
 
-(deftest catalog-of!-test
-  (testing "scans a library's roots into a catalog keyed by [artist album title size rel]"
-    (let [d (tfs/temp-dir!)]
-      (try
-        (tfs/write! (.resolve d "sub/x.mp3") "xyz")
-        (let [cat (sync/catalog-of! {:roots [(tfs/uri-of d)]})
-              ;; sub/x.mp3 has no embedded tags -> path-derived: artist "sub", title "x".
-              k   ["sub" nil "x" 3 "sub/x.mp3"]]
-          (is (= #{k} (set (keys cat))))
-          (is (= "sub/x.mp3" (:rel (cat k)))))
-        (finally
-          (tfs/delete-tree! d))))))

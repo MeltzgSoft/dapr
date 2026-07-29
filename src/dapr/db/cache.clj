@@ -268,16 +268,21 @@
   256)
 
 (defn- track-sources
-  "Map of [rel size] -> :track/tag-source for every track currently in the DB.
-  Used across libraries (the track entity is shared) to avoid downgrading a
-  track's embedded tags to path-derived ones."
-  [db]
-  (reduce (fn [m [rel size src]] (assoc m [rel size] src))
-          {}
-          (d/q '[:find ?rel ?size ?src
-                 :where [?t :track/rel ?rel] [?t :track/size ?size]
-                 [?t :track/tag-source ?src]]
-               db)))
+  "Map of [rel size] -> :track/tag-source for the tracks identified by `ks`. Looks
+  across libraries (the track entity is shared) so a path-derived scan of one
+  library can't downgrade another's embedded tags. Scoped to the keys being written
+  rather than the whole track table, since an incremental refresh asks once per
+  batch (see upsert-library-tracks!)."
+  [db ks]
+  (if (empty? ks)
+    {}
+    (reduce (fn [m [rel size src]] (assoc m [rel size] src))
+            {}
+            (d/q '[:find ?rel ?size ?src
+                   :in $ [[?rel ?size] ...]
+                   :where [?t :track/rel ?rel] [?t :track/size ?size]
+                   [?t :track/tag-source ?src]]
+                 db ks))))
 
 (defn- downgrade?
   "True when writing scanned track `t`'s tags would replace existing embedded tags
@@ -304,35 +309,29 @@
               (not= (:disc-number cached) (:disc-number t))
               (not= (:duration-millis cached) (:duration-millis t)))))
 
-(defn replace-library-tracks!
-  "Set library `lib-eid`'s presences to exactly `tracks` (catalog track maps).
-  Diffs against the library's current cached catalog (`cached`, key -> track —
-  queried when not supplied) and only transacts the delta: retract presences whose
-  track is gone, and upsert tracks that are new or changed (see needs-upsert?). An
-  unchanged re-scan therefore transacts nothing. A track's existing embedded tags
-  are never overwritten by a path-derived scan (the presence is still recorded);
-  see downgrade?. Upserts are batched so a large change set can't overflow
-  DataScript's per-upsert recursion (see tx-batch-size)."
+(defn upsert-library-tracks!
+  "Record `tracks` (catalog track maps) on library `lib-eid`, adding or updating —
+  never removing — presences. Diffs against the library's current cached catalog
+  (`cached`, key -> track, queried when not supplied) and only transacts the
+  changed ones (see needs-upsert?), so an unchanged re-scan transacts nothing. A
+  track's existing embedded tags are never overwritten by a path-derived scan (the
+  presence is still recorded); see downgrade?. Upserts are batched so a large
+  change set can't overflow DataScript's per-upsert recursion (see tx-batch-size).
+
+  Upsert-only, so it is safe to call **incrementally** as a scan progresses (see
+  dapr.refresh): the cached catalog stays a superset of what is really on the
+  device until the scan finishes and reconcile-library-tracks! prunes it."
   ([conn lib-eid tracks]
-   (replace-library-tracks! conn lib-eid tracks (library-catalog (d/db conn) lib-eid)))
+   (upsert-library-tracks! conn lib-eid tracks (library-catalog (d/db conn) lib-eid)))
   ([conn lib-eid tracks cached]
-   (let [db       (d/db conn)
-         want     (set (map (juxt :rel :size) tracks))
-         src-of   (track-sources db)
-         existing (d/q '[:find ?p ?rel ?size :in $ ?lib
-                         :where [?p :presence/library ?lib]
-                         [?p :presence/track ?t]
-                         [?t :track/rel ?rel] [?t :track/size ?size]]
-                       db lib-eid)
-         retract  (vec (for [[p rel size] existing
-                             :when (not (want [rel size]))]
-                         [:db/retractEntity p]))
-         upserts  (filter (fn [t]
-                            (needs-upsert? (cached (lib/track-key t))
-                                           (src-of [(:rel t) (:size t)]) t))
-                          tracks)]
-     (when (seq retract)
-       (d/transact! conn retract))
+   (let [src-of  (track-sources (d/db conn) (map (juxt :rel :size) tracks))
+         upserts (filter (fn [t]
+                           ;; `cached` is keyed by the domain track key (tags+size
+                           ;; +rel), tag sources by the physical file [rel size] —
+                           ;; see library-catalog and dapr.domain.library/track-key.
+                           (needs-upsert? (cached (lib/track-key t))
+                                          (src-of [(:rel t) (:size t)]) t))
+                         tracks)]
      (doseq [batch (partition-all tx-batch-size upserts)]
        (d/transact! conn (into []
                                (mapcat (fn [t]
@@ -340,6 +339,41 @@
                                                    (not (downgrade? (src-of [(:rel t) (:size t)]) t))
                                                    t)))
                                batch))))))
+
+(defn reconcile-library-tracks!
+  "Drop library `lib-eid`'s presences for tracks not in `seen` — the tracks a
+  completed scan did *not* find, i.e. deleted from the device. The track entities
+  are left in place; other libraries may still hold them.
+
+  `seen` holds **physical file** identities [rel size] (what a presence is keyed by
+  here), not domain track keys (which carry the tags — see
+  dapr.domain.library/track-key). Passing the latter would match nothing and
+  retract the whole library.
+
+  Split out from the upsert half so an interrupted scan never retracts: only a walk
+  that ran to completion has a `seen` set that is authoritative about absence (see
+  dapr.refresh)."
+  [conn lib-eid seen]
+  (let [existing (d/q '[:find ?p ?rel ?size :in $ ?lib
+                        :where [?p :presence/library ?lib]
+                        [?p :presence/track ?t]
+                        [?t :track/rel ?rel] [?t :track/size ?size]]
+                      (d/db conn) lib-eid)
+        retract  (vec (for [[p rel size] existing
+                            :when (not (contains? seen [rel size]))]
+                        [:db/retractEntity p]))]
+    (when (seq retract)
+      (d/transact! conn retract))))
+
+(defn replace-library-tracks!
+  "Set library `lib-eid`'s presences to exactly `tracks` — the whole-scan form used
+  once a full catalog is in hand (sync-time scans): reconcile away what is gone,
+  then upsert what is new or changed."
+  ([conn lib-eid tracks]
+   (replace-library-tracks! conn lib-eid tracks (library-catalog (d/db conn) lib-eid)))
+  ([conn lib-eid tracks cached]
+   (reconcile-library-tracks! conn lib-eid (set (map (juxt :rel :size) tracks)))
+   (upsert-library-tracks! conn lib-eid tracks cached)))
 
 (defn add-presence!
   "Record that `track` is now on library `lib-eid` (used after a sync add). The

@@ -12,17 +12,23 @@
   [size rel]
   (lib/track-key {:size size :rel rel}))
 
+(defn- catalog
+  "Index test tracks by their domain key — the catalog shape the planner takes,
+  which the app itself gets from the cache (dapr.db.cache/library-catalog)."
+  [tracks]
+  (into {} (map (juxt lib/track-key identity)) tracks))
+
 (defn- by-key [actions]
   (into {} (map (juxt :key identity)) actions))
 
 (deftest selection-plan-test
-  (let [source (lib/catalog [(track "a.mp3" 10 "src" "a.mp3")
-                             (track "b.mp3" 20 "src" "Albums/b.mp3")
-                             (track "c.mp3" 30 "src" "c.mp3")])
+  (let [source (catalog [(track "a.mp3" 10 "src" "a.mp3")
+                         (track "b.mp3" 20 "src" "Albums/b.mp3")
+                         (track "c.mp3" 30 "src" "c.mp3")])
         ;; sink holds a at the same rel (under a different root -> still a match),
         ;; plus an extraneous track.
-        sink   (lib/catalog [(track "a.mp3" 10 "snk" "a.mp3")
-                             (track "d.mp3" 40 "snk" "d.mp3")])
+        sink   (catalog [(track "a.mp3" 10 "snk" "a.mp3")
+                         (track "d.mp3" 40 "snk" "d.mp3")])
         actions (plan/selection-plan
                  {:source-catalog source
                   :sink-catalog   sink
@@ -50,7 +56,7 @@
                :sink-roots [{:uri "snk" :free-bytes 1000}]}))))))
 
 (deftest placement-test
-  (let [source (lib/catalog [(track "x.mp3" 30 "src" "x.mp3")])]
+  (let [source (catalog [(track "x.mp3" 30 "src" "x.mp3")])]
     (testing "skips a root without room and uses the next that fits"
       (let [m (first (plan/selection-plan
                       {:source-catalog source :sink-catalog {}
@@ -66,8 +72,8 @@
         (is (= :blocked (:op m)))
         (is (= :no-room (:reason m)))))
     (testing "successive adds consume a root's remaining free space"
-      (let [src2 (lib/catalog [(track "p.mp3" 30 "src" "p.mp3")
-                               (track "q.mp3" 30 "src" "q.mp3")])
+      (let [src2 (catalog [(track "p.mp3" 30 "src" "p.mp3")
+                           (track "q.mp3" 30 "src" "q.mp3")])
             ops  (->> (plan/selection-plan
                        {:source-catalog src2 :sink-catalog {}
                         :selected #{(tk 30 "p.mp3") (tk 30 "q.mp3")}
@@ -78,10 +84,10 @@
         (is (= 1 (:blocked ops)))))))
 
 (deftest summary-test
-  (let [source (lib/catalog [(track "new.mp3" 100 "src" "new.mp3")
-                             (track "keep.mp3" 5 "src" "A/keep.mp3")])
-        sink   (lib/catalog [(track "keep.mp3" 5 "snk" "A/keep.mp3")
-                             (track "del.mp3" 40 "snk" "del.mp3")])
+  (let [source (catalog [(track "new.mp3" 100 "src" "new.mp3")
+                         (track "keep.mp3" 5 "src" "A/keep.mp3")])
+        sink   (catalog [(track "keep.mp3" 5 "snk" "A/keep.mp3")
+                         (track "del.mp3" 40 "snk" "del.mp3")])
         ;; del.mp3 is sink-only — :delete handling so it is removed (default :keep
         ;; would retain it and zero the delete counts).
         actions (plan/selection-plan
@@ -99,10 +105,10 @@
            (plan/summary [])))))
 
 (deftest sink-only-handling-test
-  (let [source  (lib/catalog [(track "a.mp3" 10 "src" "a.mp3")])
+  (let [source  (catalog [(track "a.mp3" 10 "src" "a.mp3")])
         ;; d.mp3 lives on the sink only.
-        sink    (lib/catalog [(track "a.mp3" 10 "snk" "a.mp3")
-                              (track "d.mp3" 40 "snk" "d.mp3")])
+        sink    (catalog [(track "a.mp3" 10 "snk" "a.mp3")
+                          (track "d.mp3" 40 "snk" "d.mp3")])
         plan-with (fn [handling source-roots]
                     (plan/selection-plan
                      {:source-catalog source :sink-catalog sink
