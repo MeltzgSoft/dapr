@@ -44,17 +44,11 @@
   [state-atom conn]
   (swap! state-atom state/set-libraries (cache/libraries (d/db conn))))
 
-(defn- error-summary
-  "A short one-line description of `t` for the status/error field — its message, or
-  its class name when it has none (e.g. a StackOverflowError)."
-  [^Throwable t]
-  (or (not-empty (.getMessage t)) (.getName (class t))))
-
 (defn- log-error!
   "Emit an error signal carrying `t` (so its stack trace lands in the log file) with
   a one-line `prefix` message, and set the UI error field to its summary."
   [state-atom prefix ^Throwable t]
-  (let [summary (error-summary t)]
+  (let [summary (log/error-summary t)]
     (t/log! {:level :error :error t :msg (str prefix summary)})
     (swap! state-atom state/set-error summary)))
 
@@ -379,8 +373,9 @@
             (refresh-libraries! state-atom conn)
             (swap! state-atom state/cancel-editor)
             ;; A new or re-rooted library needs a walk before its cache means
-            ;; anything, so queue one.
-            (refresh/enqueue! refresher lib-id)
+            ;; anything, and an edited one may point somewhere else entirely — so
+            ;; start one right away rather than behind whatever else is queued.
+            (refresh/prioritize! refresher [lib-id])
             (future (probe-availability! state-atom)))
           (t/log! "Library needs a name and at least one file://, mtp:// or smb:// root.")))
       ::editor-cancel (swap! state-atom state/cancel-editor)

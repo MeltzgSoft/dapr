@@ -153,7 +153,23 @@
              (fmt/refresh-text {:active nil :status {1 :pending 2 :paused}} libs))))
     (testing "blank once every library is up to date"
       (is (= "" (fmt/refresh-text {:active nil :status {1 :complete 2 :complete}} libs)))
-      (is (= "" (fmt/refresh-text {:active nil :status {}} libs))))))
+      (is (= "" (fmt/refresh-text {:active nil :status {}} libs))))
+
+    (testing "a failed refresh is always reported — it has nowhere else to surface"
+      (let [failed {:active nil :status {1 :error} :errors {1 "device gone"}}]
+        (is (= "Refresh failed for 'Phone' — see View ▸ Logs" (fmt/refresh-text failed libs)))
+        (is (true? (fmt/refresh-failed? failed)))
+        (is (= "Phone: device gone" (fmt/refresh-error-detail failed libs)))))
+
+    (testing "a failure shows alongside whatever is still in flight"
+      (let [mixed {:active 2 :progress {:done 1 :total 4}
+                   :status {1 :error 2 :scanning} :errors {1 "device gone"}}]
+        (is (= "Refreshing 'NAS'… 1/4 · Refresh failed for 'Phone' — see View ▸ Logs"
+               (fmt/refresh-text mixed libs)))))
+
+    (testing "no failure, no error styling or detail"
+      (is (false? (fmt/refresh-failed? {:active 1 :status {1 :scanning}})))
+      (is (nil? (fmt/refresh-error-detail {:errors {}} libs))))))
 
 (deftest library-unavailable?-test
   (testing "true only when probed and explicitly unavailable"

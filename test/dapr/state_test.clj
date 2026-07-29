@@ -387,6 +387,34 @@
         (is (nil? (state/refresh-status s2 "a")))
         (is (nil? (get-in s2 [:refresh :active])))))))
 
+(deftest refresh-error-test
+  (let [failed (-> state/initial-state
+                   (state/set-libraries [lib-a lib-b])
+                   (state/set-refresh-error "a" "device gone"))]
+    (testing "a failed refresh records its reason, for the UI to surface"
+      (is (= :error (state/refresh-status failed "a")))
+      (is (= {"a" "device gone"} (state/refresh-errors failed))))
+
+    (testing "a background failure leaves the foreground status and plan alone"
+      (let [s (-> state/initial-state
+                  (state/set-plan [] {:add 1})
+                  (state/set-refresh-error "a" "device gone"))]
+        (is (= :planned (:status s)))
+        (is (some? (:plan s)))
+        (is (nil? (:error s)))))
+
+    (testing "re-running that library clears the stale message"
+      (is (empty? (state/refresh-errors (state/set-refresh-status failed "a" :pending))))
+      (is (empty? (state/refresh-errors (state/set-refresh-status failed "a" :complete)))))
+
+    (testing "an error keeps the library out of :complete, so sync still confirms"
+      (is (false? (state/library-complete? failed "a")))
+      (is (= ["A"] (mapv :name (state/sync-incomplete-libraries
+                                (assoc failed :source-id "a"))))))
+
+    (testing "deleting the library drops its error too"
+      (is (empty? (state/refresh-errors (state/forget-refresh failed "a")))))))
+
 (deftest confirm-test
   (testing "open-confirm holds the dialog description; close-confirm clears it"
     (let [c {:kind :sync :message "sure?"}

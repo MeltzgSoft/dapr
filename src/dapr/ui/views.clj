@@ -132,10 +132,17 @@
                  :tooltip {:fx/type :tooltip
                            :text "Re-check which devices are reachable and re-scan every library"}
                  :on-action {:event/type ::events/refresh-availability}}
-                {:fx/type :label
-                 :h-box/hgrow :always
-                 :style "-fx-text-fill: gray;"
-                 :text (fmt/refresh-text refresh libraries)}]}))
+                (cond-> {:fx/type     :label
+                         :h-box/hgrow :always
+                         :text        (fmt/refresh-text refresh libraries)
+                         :style       (if (fmt/refresh-failed? refresh)
+                                        "-fx-text-fill: red;"
+                                        "-fx-text-fill: gray;")}
+                  ;; Why it failed, per library — the sync bar only has room to say
+                  ;; that it did.
+                  (fmt/refresh-failed? refresh)
+                  (assoc :tooltip {:fx/type :tooltip
+                                   :text    (fmt/refresh-error-detail refresh libraries)}))]}))
 
 (defn- capacity-bar
   "Capacity meter for the sink library `sink-name` (how full it would be after the

@@ -35,7 +35,7 @@
    ;; (:pending/:scanning/:paused/:complete/:error), the library being walked right
    ;; now, and its progress. Deliberately separate from :status, which tracks the
    ;; *foreground* op — a refresh must never disable Preview/Sync.
-   :refresh        {:status {} :active nil :progress nil}
+   :refresh        {:status {} :errors {} :active nil :progress nil}
    :confirm        nil    ; pending confirmation dialog, or nil (see open-confirm)
    :log            []     ; vector of message strings (capped at max-log-lines)
    :log-appends    0      ; total lines ever appended; drives log auto-scroll
@@ -346,9 +346,29 @@
 
 (defn set-refresh-status
   "Record library `lib-id`'s refresh status (:pending / :scanning / :paused /
-  :complete / :error)."
+  :complete). Clears any recorded failure: reaching any of these means a newer
+  attempt has superseded it, so the stale message must stop being shown (see
+  set-refresh-error)."
   [state lib-id status]
-  (assoc-in state [:refresh :status lib-id] status))
+  (-> state
+      (assoc-in [:refresh :status lib-id] status)
+      (update-in [:refresh :errors] dissoc lib-id)))
+
+(defn set-refresh-error
+  "Record that library `lib-id`'s refresh failed, with `message` — a one-liner the
+  sync bar can show, since a background failure has no other way to reach the user
+  (the full trace is in the log). Kept out of the app-wide :error/:status, which
+  belong to the *foreground* op: a scan that failed must not blank a computed plan
+  or make the window look broken."
+  [state lib-id message]
+  (-> state
+      (assoc-in [:refresh :status lib-id] :error)
+      (assoc-in [:refresh :errors lib-id] message)))
+
+(defn refresh-errors
+  "Failed refreshes as {lib-id message} (empty when all is well)."
+  [state]
+  (get-in state [:refresh :errors] {}))
 
 (defn refresh-status
   "Refresh status of library `lib-id` this session, or nil if it has never been
@@ -380,6 +400,7 @@
   [state lib-id]
   (-> state
       (update-in [:refresh :status] dissoc lib-id)
+      (update-in [:refresh :errors] dissoc lib-id)
       (cond-> (= lib-id (get-in state [:refresh :active]))
         (set-refresh-active nil))))
 
