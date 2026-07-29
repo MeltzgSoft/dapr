@@ -22,8 +22,11 @@
       {:tracks (walk! root uri lib/default-audio-extensions nil known)
        :reads  @reads})))
 
-(defn- by-key [tracks]
-  (into {} (map (juxt :key identity)) tracks))
+(defn- by-file
+  "Index tracks by physical file [rel size] — the :key now carries the tags, so a
+  size/mtime-driven test wants to look tracks up by their stable file identity."
+  [tracks]
+  (into {} (map (juxt (juxt :rel :size) identity)) tracks))
 
 (deftest incremental-tag-reuse-test
   (with-open [fs (tfs/unix-fs)]
@@ -35,12 +38,15 @@
       (testing "with no cache, every audio file is read"
         (let [{:keys [tracks reads]} (scan root uri nil)]
           (is (= 2 reads))
-          (is (= #{["A/x.mp3" 3] ["B/y.flac" 2]} (set (map :key tracks))))
+          (is (= #{["read" nil nil 3 "A/x.mp3"] ["read" nil nil 2 "B/y.flac"]}
+                 (set (map :key tracks))))
           (is (= "read" (:artist (first tracks))))))
 
-      (let [known-map (by-key (:tracks (scan root uri nil)))
-            ;; Pretend the cache holds distinct tags so reuse is observable.
-            cached    (into {} (map (fn [[k t]] [k (assoc t :artist "cached")])) known-map)
+      (let [known-map (by-file (:tracks (scan root uri nil)))
+            ;; Pretend the cache holds distinct tags so reuse is observable. Tag
+            ;; reuse is looked up by physical file [rel size], not the domain key.
+            cached    (into {} (map (fn [[_ t]] [[(:rel t) (:size t)] (assoc t :artist "cached")]))
+                            known-map)
             known     (fn [rel size] (get cached [rel size]))]
 
         (testing "an unchanged tree reuses every cached tag and reads nothing"
@@ -52,14 +58,14 @@
           (Files/setLastModifiedTime (.resolve root "A/x.mp3") (FileTime/fromMillis 0))
           (let [{:keys [tracks reads]} (scan root uri known)]
             (is (= 1 reads))
-            (is (= "read" (:artist (get (by-key tracks) ["A/x.mp3" 3]))))
-            (is (= "cached" (:artist (get (by-key tracks) ["B/y.flac" 2]))))))
+            (is (= "read" (:artist (get (by-file tracks) ["A/x.mp3" 3]))))
+            (is (= "cached" (:artist (get (by-file tracks) ["B/y.flac" 2]))))))
 
         (testing "a file whose size changed misses the cache (new key) and is re-read"
           (tfs/write! (.resolve root "B/y.flac") "yyyy")
           (let [{:keys [tracks]} (scan root uri known)]
-            (is (contains? (set (map :key tracks)) ["B/y.flac" 4]))
-            (is (= "read" (:artist (get (by-key tracks) ["B/y.flac" 4]))))))))))
+            (is (contains? (by-file tracks) ["B/y.flac" 4]))
+            (is (= "read" (:artist (get (by-file tracks) ["B/y.flac" 4]))))))))))
 
 (deftest deep-nesting-no-overflow-test
   (with-open [fs (tfs/unix-fs)]

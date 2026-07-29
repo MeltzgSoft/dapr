@@ -25,7 +25,10 @@
   ([conn lib-eid library] (scan-into-cache! conn lib-eid library nil))
   ([conn lib-eid library on-scan]
    (let [known-cat (cache/library-catalog (d/db conn) lib-eid)
-         known     (fn [rel size] (get known-cat [rel size]))
+         ;; known-cat is keyed by the domain track key, but tag reuse is looked up
+         ;; by physical file [rel size] (before tags are read), so index by that.
+         by-file   (into {} (map (juxt (juxt :rel :size) identity)) (vals known-cat))
+         known     (fn [rel size] (get by-file [rel size]))
          tracks    (nio/catalog! (:roots library) on-scan lib/default-audio-extensions known)]
      ;; Reuse the catalog we already queried so the cache diff doesn't re-query it.
      (cache/replace-library-tracks! conn lib-eid tracks known-cat)

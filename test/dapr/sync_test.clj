@@ -8,10 +8,17 @@
             [dapr.sync :as sync]
             [datascript.core :as d]))
 
+(defn- by-file
+  "Re-index a catalog (keyed by the domain track key) by physical file [rel size],
+  so a test can look a track up by its stable file identity."
+  [cat]
+  (into {} (map (fn [[_ t]] [[(:rel t) (:size t)] t])) cat))
+
 (def ^:private tracks
   [{:rel "A/B/One.mp3" :size 10 :mtime 5 :artist "X" :album "B" :title "One"
-    :root "file:///r/" :key ["A/B/One.mp3" 10]}
-   {:rel "Two.flac" :size 20 :mtime 6 :title "Two" :root "file:///r/" :key ["Two.flac" 20]}])
+    :root "file:///r/" :key ["X" "B" "One" 10 "A/B/One.mp3"]}
+   {:rel "Two.flac" :size 20 :mtime 6 :title "Two" :root "file:///r/"
+    :key [nil nil "Two" 20 "Two.flac"]}])
 
 (deftest scan-into-cache-test
   (let [conn (cache/empty-conn)
@@ -20,14 +27,14 @@
     (with-redefs [nio/catalog! (fn [_roots _on-scan _ext known]
                                  (swap! seen conj known)
                                  tracks)]
-      (testing "returns the scanned catalog keyed by [rel size]"
-        (let [cat (sync/scan-into-cache! conn lib {:roots ["file:///r/"]})]
+      (testing "returns the scanned catalog, indexable by physical file [rel size]"
+        (let [cat (by-file (sync/scan-into-cache! conn lib {:roots ["file:///r/"]}))]
           (is (= #{["A/B/One.mp3" 10] ["Two.flac" 20]} (set (keys cat))))
           (is (= "X" (:artist (get cat ["A/B/One.mp3" 10]))))))
 
       (testing "the scan is persisted into the cache"
         (is (= #{["A/B/One.mp3" 10] ["Two.flac" 20]}
-               (set (keys (cache/library-catalog (d/db conn) lib))))))
+               (set (keys (by-file (cache/library-catalog (d/db conn) lib)))))))
 
       (testing "the first scan's known lookup is empty; the next reflects the cache"
         (let [first-known (first @seen)]
@@ -58,7 +65,7 @@
                    {:op :skip :key ["Keep.mp3" 20]}]]
       (sync/apply-plan-to-cache! conn snk src-cat actions)
       (testing "the sink cache reflects the add and delete, leaving skips alone"
-        (let [cat (cache/library-catalog (d/db conn) snk)]
+        (let [cat (by-file (cache/library-catalog (d/db conn) snk))]
           (is (= #{["New.mp3" 10] ["Keep.mp3" 20]} (set (keys cat))))
           (testing "the added presence lives under the sink root and carries source tags"
             (is (= "file:///k/" (:root (get cat ["New.mp3" 10]))))
@@ -82,7 +89,7 @@
                    {:op :skip :key ["Other.mp3" 10]}]]
       (sync/apply-source-adds-to-cache! conn src sink-cat actions)
       (testing "the source cache gains a presence under its root carrying sink tags"
-        (let [cat (cache/library-catalog (d/db conn) src)]
+        (let [cat (by-file (cache/library-catalog (d/db conn) src))]
           (is (= #{["Back.mp3" 50]} (set (keys cat))))
           (is (= "file:///s/" (:root (get cat ["Back.mp3" 50]))))
           (is (= "Art" (:artist (get cat ["Back.mp3" 50]))))))

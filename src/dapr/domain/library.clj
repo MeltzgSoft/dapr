@@ -4,12 +4,14 @@
   A *library* is {:id <string> :name <string> :roots [<uri-string> ...]} where
   each root addresses a directory on a java.nio filesystem; supported URI
   schemes are \"file\", \"mtp\" and \"smb\". A *track* is one audio file discovered under
-  a library's roots: {:key [filename size] :name :size :mtime :root :rel} plus its
-  :artist/:album/:title tags (see dapr.device.tag). A
-  *catalog* is a map of track :key -> track. Track identity is [rel size] — the
-  path relative to its root, plus byte size, with the root deliberately excluded
-  so the same relative path matches across roots/devices (e.g. source ROOT1/foo/
-  bar.mp3 matches sink SD/foo/bar.mp3). Nothing here performs I/O."
+  a library's roots: {:key [artist album title size rel] :name :size :mtime :root
+  :rel} plus its :artist/:album/:title tags (see dapr.device.tag). A
+  *catalog* is a map of track :key -> track. Track identity is
+  [artist album title size rel] — the tags and byte size identify the track, with
+  the root-relative path appended only as a tie-breaker so two files that share
+  tags+size stay distinct. The root is excluded from :rel so the same relative
+  path matches across roots/devices (e.g. source ROOT1/foo/bar.mp3 matches sink
+  SD/foo/bar.mp3). Nothing here performs I/O."
   (:require [clojure.string :as str]
             [dapr.device.file.format]
             [dapr.device.format :as device]
@@ -66,14 +68,16 @@
   ([filename extensions] (contains? extensions (extension filename))))
 
 (defn track-key
-  "Identity of a track: [rel size] — its root-relative path and byte size. The
-  root is excluded so the same relative path matches across roots/devices."
-  [{:keys [rel size]}]
-  [rel size])
+  "Identity of a track: [artist album title size rel] — its tags and byte size,
+  with the root-relative path appended only as a tie-breaker (so two files that
+  share tags+size stay distinct). The root is excluded so the same relative path
+  matches across roots/devices."
+  [{:keys [artist album title size rel]}]
+  [artist album title size rel])
 
 (defn catalog
   "Index a seq of tracks by :key into a catalog map. On a key collision (two
-  roots holding the same relative path + size) the first wins."
+  roots holding the same tags + size + relative path) the first wins."
   [tracks]
   (reduce (fn [acc t]
             (let [k (track-key t)]

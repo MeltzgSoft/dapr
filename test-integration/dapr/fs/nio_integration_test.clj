@@ -26,13 +26,17 @@
         (tfs/write! (.resolve d1 "sub/b.flac") "bb")
         (tfs/write! (.resolve d2 "c.ogg") "ccc")
         (let [tracks (nio/catalog! [(tfs/uri-of d1) (tfs/uri-of d2)])
-              by-key (into {} (map (juxt :key identity)) tracks)]
-          (is (= #{["a.mp3" 3] ["sub/b.flac" 2] ["c.ogg" 3]} (set (keys by-key))))
-          (is (= (tfs/uri-of d1) (:root (by-key ["a.mp3" 3]))))
-          (is (= "sub/b.flac" (:rel (by-key ["sub/b.flac" 2]))))
-          (is (= (tfs/uri-of d2) (:root (by-key ["c.ogg" 3]))))
+              by-key (into {} (map (juxt :key identity)) tracks)
+              ;; no embedded tags -> path-derived: [artist album title size rel]
+              a      [nil nil "a" 3 "a.mp3"]
+              b      ["sub" nil "b" 2 "sub/b.flac"]
+              c      [nil nil "c" 3 "c.ogg"]]
+          (is (= #{a b c} (set (keys by-key))))
+          (is (= (tfs/uri-of d1) (:root (by-key a))))
+          (is (= "sub/b.flac" (:rel (by-key b))))
+          (is (= (tfs/uri-of d2) (:root (by-key c))))
           (testing "non-audio files are ignored"
-            (is (not (contains? by-key ["cover.jpg" 3])))))
+            (is (not (contains? by-key [nil nil "cover" 3 "cover.jpg"])))))
         (testing "on-scan emits a :file event once per scanned audio file"
           (let [files  (atom [])
                 dirs   (atom [])

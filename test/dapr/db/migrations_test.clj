@@ -78,6 +78,12 @@
   [rel size]
   (track rel size :artist "A" :source :path :root "mtp://dev/"))
 
+(defn- by-file
+  "Re-index a catalog (keyed by the domain track key) by physical file [rel size],
+  so a test can look a track up by its stable file identity."
+  [cat]
+  (into {} (map (fn [[_ t]] [[(:rel t) (:size t)] t])) cat))
+
 (deftest migrate-mtp-tag-sources-test
   (let [conn (cache/empty-conn)
         f    (cache/upsert-library! conn {:name "F" :roots ["file:///r/"]})
@@ -90,15 +96,15 @@
                                                   :root "mtp://dev/")])
     (testing "clears :path tag-source only on mtp-rooted tracks, so they re-read"
       (is (= 1 (migrations/migrate-mtp-tag-sources! conn)))
-      (let [cat-m (cache/library-catalog (d/db conn) m)
-            cat-f (cache/library-catalog (d/db conn) f)]
+      (let [cat-m (by-file (cache/library-catalog (d/db conn) m))
+            cat-f (by-file (cache/library-catalog (d/db conn) f))]
         (is (nil? (:source (get cat-m ["song.mp3" 1]))) "mtp :path source cleared")
         (is (= :embedded (:source (get cat-m ["emb.mp3" 2]))) "mtp :embedded left alone")
         (is (= :path (:source (get cat-f ["f.mp3" 3]))) "file :path left alone")))
     (testing "re-running finds nothing left to clear (run-once is enforced by the
               applied-id gate, not this fn)"
       (is (= 0 (migrations/migrate-mtp-tag-sources! conn)))
-      (is (nil? (:source (get (cache/library-catalog (d/db conn) m) ["song.mp3" 1])))))))
+      (is (nil? (:source (get (by-file (cache/library-catalog (d/db conn) m)) ["song.mp3" 1])))))))
 
 (deftest migrate-extended-tag-fields-test
   (let [conn (cache/empty-conn)
@@ -116,13 +122,13 @@
     (testing "clears tag-source (any value) on file:// and mtp:// tracks so they re-read;
               smb:// is left alone (handled by :migration/smb-tag-sources)"
       (is (= 3 (migrations/migrate-extended-tag-fields! conn)))
-      (is (nil? (:source (get (cache/library-catalog (d/db conn) f) ["f-emb.flac" 1])))
+      (is (nil? (:source (get (by-file (cache/library-catalog (d/db conn) f)) ["f-emb.flac" 1])))
           "file :embedded cleared")
-      (is (nil? (:source (get (cache/library-catalog (d/db conn) m) ["m-emb.flac" 2])))
+      (is (nil? (:source (get (by-file (cache/library-catalog (d/db conn) m)) ["m-emb.flac" 2])))
           "mtp :embedded cleared")
-      (is (nil? (:source (get (cache/library-catalog (d/db conn) m) ["m-path.flac" 3])))
+      (is (nil? (:source (get (by-file (cache/library-catalog (d/db conn) m)) ["m-path.flac" 3])))
           "mtp :path cleared")
-      (is (= :path (:source (get (cache/library-catalog (d/db conn) s) ["s-path.flac" 4])))
+      (is (= :path (:source (get (by-file (cache/library-catalog (d/db conn) s)) ["s-path.flac" 4])))
           "smb :path untouched"))
     (testing "re-running finds nothing left to clear (run-once is enforced by the gate)"
       (is (= 0 (migrations/migrate-extended-tag-fields! conn))))))
@@ -139,8 +145,8 @@
                                                   :root "smb://host/Music/")])
     (testing "clears :path tag-source only on smb-rooted tracks, so they re-read"
       (is (= 1 (migrations/migrate-smb-tag-sources! conn)))
-      (let [cat-s (cache/library-catalog (d/db conn) s)
-            cat-f (cache/library-catalog (d/db conn) f)]
+      (let [cat-s (by-file (cache/library-catalog (d/db conn) s))
+            cat-f (by-file (cache/library-catalog (d/db conn) f))]
         (is (nil? (:source (get cat-s ["song.flac" 1]))) "smb :path source cleared")
         (is (= :embedded (:source (get cat-s ["emb.flac" 2]))) "smb :embedded left alone")
         (is (= :path (:source (get cat-f ["f.mp3" 3]))) "file :path left alone")))
@@ -154,11 +160,11 @@
     (testing "running the real registry applies every migration, in order, and records them"
       (is (= [:migration/mtp-tag-sources :migration/extended-tag-fields :migration/smb-tag-sources]
              (migrations/run-migrations! conn)))
-      (is (nil? (:source (get (cache/library-catalog (d/db conn) m) ["song.mp3" 1]))))
+      (is (nil? (:source (get (by-file (cache/library-catalog (d/db conn) m)) ["song.mp3" 1]))))
       (is (= #{:migration/mtp-tag-sources :migration/extended-tag-fields :migration/smb-tag-sources}
              (migrations/applied-ids (d/db conn)))))
     (testing "a second run is a no-op — the applied-id set, not the fns, enforces once"
       (cache/replace-library-tracks! conn m [(mtp-path-track "song.mp3" 1)]) ; re-scan re-adds :path
       (is (= [] (migrations/run-migrations! conn)))
-      (is (= :path (:source (get (cache/library-catalog (d/db conn) m) ["song.mp3" 1])))
+      (is (= :path (:source (get (by-file (cache/library-catalog (d/db conn) m)) ["song.mp3" 1])))
           "not re-cleared: the migrations are already recorded"))))

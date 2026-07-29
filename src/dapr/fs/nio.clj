@@ -64,14 +64,14 @@
   (embedded for file://, path-derived elsewhere — see dapr.device.tag; reused
   from `known` when unchanged — see track-tags!)."
   [^Path root uri ^Path p ^BasicFileAttributes attrs known]
-  (let [m {:name  (str (.getFileName p))
-           :size  (.size attrs)
-           :mtime (.toMillis (.lastModifiedTime attrs))
-           :root  uri
-           :rel   (relative-key root p)}]
-    (-> m
-        (merge (track-tags! known m p))
-        (assoc :key (lib/track-key m)))))
+  (let [base {:name  (str (.getFileName p))
+              :size  (.size attrs)
+              :mtime (.toMillis (.lastModifiedTime attrs))
+              :root  uri
+              :rel   (relative-key root p)}
+        m    (merge base (track-tags! known base p))]
+    ;; :key is derived from the tags, so it must be computed after the merge.
+    (assoc m :key (lib/track-key m))))
 
 (defn- walk-audio-tracks!
   "Depth-first walk of `root`, collecting a track map for every audio file. Driven
