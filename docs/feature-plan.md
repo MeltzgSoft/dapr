@@ -522,9 +522,17 @@ source/sink not `:complete` this session.
 - **Paint happens outside the device lock.** Painting queries the sink's free space,
   which takes *that* device's lock; doing it while holding the refreshed library's
   lock could deadlock against a sync's two-device acquire.
-- **`prioritize!` never re-walks a completed library** (selection changes are free);
-  ↻ Refresh (`refresh-all!`) is the way to force a re-scan. It now re-probes
-  availability *and* re-queues every library.
+- **Choosing or saving a library starts a refresh of it**, at the front of the
+  queue — including one that already completed this session, since the device may
+  have changed since and picking a library is exactly when the user wants its list
+  to be right. Only a library being walked *right now* is left alone. ↻ Refresh
+  (`refresh-all!`) re-probes availability and re-queues everything.
+- **A failed refresh surfaces in the sync bar**, red, with the reason per library
+  in its tooltip (`state/set-refresh-error` + `fmt/refresh-failed?` /
+  `refresh-error-detail`) — a background scan has no other way to reach the user.
+  It stays out of the app-wide `:error`/`:status`, which belong to the foreground
+  op: a scan that failed must not blank a computed plan. The message clears as
+  soon as that library is re-queued.
 - **`cache/track-sources` is now scoped to the keys being written** rather than the
   whole track table, since an incremental refresh asks once per batch.
 - **The whole-catalog scan path is gone**, not just unused: `nio/catalog!` (+ its

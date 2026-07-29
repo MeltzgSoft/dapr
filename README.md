@@ -35,9 +35,10 @@ a live device.
    sink hold exactly the selected tracks, then applies it.
 
 Libraries are scanned by a **background refresher**, never by the UI: picking a
-source or sink paints its tracks from the cache immediately (however large the
-library) and just moves it to the front of the refresh queue, with progress
-shown in the sync bar. A scan **yields its device** the moment a sync needs it,
+source or sink (or saving an edited library) paints its tracks from the cache
+immediately (however large the library) and starts a fresh scan of it at the
+front of the queue, with progress — and any failure, with its reason — shown in
+the sync bar. A scan **yields its device** the moment a sync needs it,
 then resumes where it left off, so a transfer never waits behind one. A refresh
 that hasn't finished leaves the cached track list a possibly-stale *superset* of
 what is on the device, so syncing before it completes asks for confirmation

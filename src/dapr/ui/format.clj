@@ -135,20 +135,44 @@
       1 (first quoted)
       (str (str/join ", " (butlast quoted)) " and " (last quoted)))))
 
+(defn- library-name
+  "Display name of library `id` in `libraries`, or a placeholder if it is gone."
+  [libraries id]
+  (or (:name (first (filter #(= (:id %) id) libraries))) "?"))
+
 (defn refresh-text
   "One-line description of the background refresh for the sync bar: what is being
-  walked now (with its file counts), or how many libraries are still queued, or
-  \"\" when everything is up to date. `libraries` supplies the display name."
-  [{:keys [active status progress]} libraries]
-  (let [name-of (fn [id] (:name (first (filter #(= (:id %) id) libraries))))
-        waiting (count (filter (comp #{:pending :paused} val) status))]
-    (cond
-      active (let [{:keys [done total]} progress]
-               (format "Refreshing %s…%s"
-                       (name-list [(name-of active)])
-                       (if (and total (pos? total)) (format " %d/%d" (or done 0) total) "")))
-      (pos? waiting) (format "Refresh queued (%d)" waiting)
-      :else "")))
+  walked now (with its file counts), how many libraries are still queued, and
+  which ones failed — \"\" only when everything is up to date. A failure is always
+  included, since a background scan has nowhere else to report itself; its reason
+  goes in the tooltip (see refresh-error-detail)."
+  [{:keys [active status progress errors]} libraries]
+  (let [waiting  (count (filter (comp #{:pending :paused} val) status))
+        progress (cond
+                   active (let [{:keys [done total]} progress]
+                            (format "Refreshing %s…%s"
+                                    (name-list [(library-name libraries active)])
+                                    (if (and total (pos? total))
+                                      (format " %d/%d" (or done 0) total) "")))
+                   (pos? waiting) (format "Refresh queued (%d)" waiting))
+        failed   (when (seq errors)
+                   (format "Refresh failed for %s — see View ▸ Logs"
+                           (name-list (map #(library-name libraries %) (keys errors)))))]
+    (str/join " · " (remove nil? [progress failed]))))
+
+(defn refresh-failed?
+  "True when any library's refresh has failed, so the sync bar can show its
+  indicator as an error rather than as ordinary progress."
+  [{:keys [errors]}]
+  (boolean (seq errors)))
+
+(defn refresh-error-detail
+  "Multi-line 'Library: reason' detail for the failed refreshes, for the sync bar's
+  tooltip. nil when nothing has failed."
+  [{:keys [errors]} libraries]
+  (when (seq errors)
+    (str/join "\n" (for [[id message] (sort-by key errors)]
+                     (format "%s: %s" (library-name libraries id) message)))))
 
 (defn library-unavailable?
   "True when library `id`'s availability has been probed and came back false, so

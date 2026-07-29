@@ -27,6 +27,7 @@
             [dapr.device.coordinator :as coord]
             [dapr.fs.nio :as nio]
             [dapr.library.catalogs :as catalogs]
+            [dapr.log :as log]
             [dapr.state :as state]
             [datascript.core :as d]
             [taoensso.telemere :as t])
@@ -144,14 +145,16 @@
   (queue-last! refresher lib-id))
 
 (defn prioritize!
-  "Move `lib-ids` (the newly chosen source/sink) to the front of the queue, so the
-  libraries the user is looking at refresh first. A library that already completed
-  its refresh this session is left alone — its cache is current, and re-walking it
-  would be pure cost; the ↻ Refresh action (refresh-all!) is how a user forces one."
+  "Queue `lib-ids` at the *front*, so a library the user just chose or edited is
+  refreshed before anything else waiting. Re-queues a library that already
+  completed this session too: the device may have changed since, and picking a
+  library is exactly when the user wants its list to be right.
+
+  A library being walked right now is left alone — the in-flight walk is already
+  the fresh one, and re-queueing it would only make it start over."
   [{:keys [state-atom] :as refresher} lib-ids]
   (doseq [lib-id (reverse (remove nil? lib-ids))
-          :let   [status (state/refresh-status @state-atom lib-id)]
-          :when  (not (contains? #{:complete :scanning} status))]
+          :when  (not= :scanning (state/refresh-status @state-atom lib-id))]
     (swap! state-atom state/set-refresh-status lib-id :pending)
     (queue-first! refresher lib-id)))
 
@@ -200,12 +203,16 @@
                   (queue-last! refresher lib-id))
               (finish-scan! refresher lib-id library result)))
           (catch Throwable t
+            ;; Drop the checkpoint: whatever went wrong (device unplugged, share
+            ;; dropped) may have invalidated the frontier, so the next attempt
+            ;; starts this library clean rather than resuming into the wreckage.
             (swap! checkpoints dissoc lib-id)
-            (swap! state-atom (fn [s] (-> s
-                                          (state/set-refresh-status lib-id :error)
-                                          (state/set-refresh-active nil))))
-            (t/log! {:level :error :error t
-                     :msg   (format "Refresh of '%s' failed: " (:name library))})))
+            (let [summary (log/error-summary t)]
+              (swap! state-atom (fn [s] (-> s
+                                            (state/set-refresh-error lib-id summary)
+                                            (state/set-refresh-active nil))))
+              (t/log! {:level :error :error t
+                       :msg   (format "Refresh of '%s' failed: %s" (:name library) summary)}))))
         (repaint! refresher lib-id)))))
 
 (defn- run-loop!

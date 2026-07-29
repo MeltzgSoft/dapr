@@ -102,6 +102,12 @@
       (testing "the library is marked :error and the refresher moves on"
         (is (= :error (state/refresh-status @state-atom lib-id)))
         (is (nil? (get-in @state-atom [:refresh :active]))))
+      (testing "the reason is recorded, so the UI can say more than 'it failed'"
+        (is (= {lib-id "device gone"} (state/refresh-errors @state-atom))))
+      (testing "the app-wide status is untouched — a background failure is not a
+                foreground one"
+        (is (= :idle (:status @state-atom)))
+        (is (nil? (:error @state-atom))))
       (finally
         (.delete path)))))
 
@@ -137,11 +143,19 @@
         (refresh/prioritize! refresher [1])
         (is (= [1 3 2] (vec queue))))
 
-      (testing "a library that already completed this session is left alone"
+      (testing "choosing a library that already completed re-queues it anyway —
+                the device may have changed since"
         (swap! state-atom state/set-refresh-status 2 :complete)
         (.remove queue 2)
         (refresh/prioritize! refresher [2])
-        (is (= [1 3] (vec queue)))
-        (is (= :complete (state/refresh-status @state-atom 2))))
+        (is (= [2 1 3] (vec queue)))
+        (is (= :pending (state/refresh-status @state-atom 2))))
+
+      (testing "the library being walked right now is left to finish"
+        (swap! state-atom state/set-refresh-status 3 :scanning)
+        (.remove queue 3)
+        (refresh/prioritize! refresher [3])
+        (is (= [2 1] (vec queue)))
+        (is (= :scanning (state/refresh-status @state-atom 3))))
       (finally
         (.delete path)))))
