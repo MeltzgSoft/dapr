@@ -34,6 +34,16 @@ a live device.
 4. **Preview & sync** — Dapr computes an **add / delete** plan that makes the
    sink hold exactly the selected tracks, then applies it.
 
+Libraries are scanned by a **background refresher**, never by the UI: picking a
+source or sink paints its tracks from the cache immediately (however large the
+library) and just moves it to the front of the refresh queue, with progress
+shown in the sync bar. A scan **yields its device** the moment a sync needs it,
+then resumes where it left off, so a transfer never waits behind one. A refresh
+that hasn't finished leaves the cached track list a possibly-stale *superset* of
+what is on the device, so syncing before it completes asks for confirmation
+first; **↻ Refresh** re-checks which devices are reachable and re-scans every
+library.
+
 The table shows each track's tags — disc/track number, title, duration,
 artist, album, genre. Tags come from the file's **own embedded metadata** where
 the backend supports reading it (`file://` via jaudiotagger, `mtp://` via the
