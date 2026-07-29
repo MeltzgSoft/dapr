@@ -31,6 +31,10 @@ The detailed per-feature and per-spike records below are the durable build log,
 kept for context; the merge mechanics for the original stacked PRs (#22–#28) are
 historical — that stack has long since landed on `main`.
 
+**New planned work:** **Feature 10 — `feat/background-refresh`** (resumable
+background library refresh with foreground device priority) is designed and
+recorded below (§10); not yet started.
+
 ---
 
 ## Decisions locked in
@@ -44,6 +48,14 @@ historical — that stack has long since landed on `main`.
 - **Feature 4 (MTP tags)**: we own the **melt-jfs** source
   (`io.github.meltzg/melt-jfs`), so the spike may propose changes to that lib
   (e.g. surfacing MTP object metadata) rather than reading file bytes.
+- **Feature 10 (background refresh)**: (a) **checkpoint-and-continue** resume
+  (save the remaining directory frontier + `seen` set, not restart-from-scratch —
+  restart re-lists every directory, the expensive MTP cost); (b) **cache-only
+  Preview** so the only foreground device op is the sync copy/delete; (c) the
+  **`file` pseudo-device is not coordinated** (local disk is parallel-safe and all
+  local libraries share one device-key); (d) the **sync-confirmation gate fires
+  when source OR sink is not `:complete` this session**. These are recommended
+  defaults — revisit before building if desired.
 
 ## Architecture recap (so a cold reboot has context)
 Clojure desktop app. Pure logic isolated from side effects (effectful fns end `!`).
@@ -413,6 +425,97 @@ album under `:keep` are left alone.
 `build.clj` rewrites it per target OS rather than parameterizing deps.edn, so
 `:run`/`:dev`/`:test` are untouched. **Status:** done — verified the linux jar
 builds, carries linux natives, and has the right Main-Class/manifest.
+
+---
+
+## 10. `feat/background-refresh` — resumable background refresh + foreground device priority
+**📋 PLANNED (not started).**
+
+**Why.** Library refreshes are slow — over MTP/SMB a single directory listing is a
+blocking native round-trip. Today the app scans on startup and on every
+source/sink change (`events/reload-catalogs!`), and device access is **serial**
+(melt-jfs per-MTP-device; SMB FileSystem creation) with **no cooperative release**,
+so a user sync blocks behind an in-flight scan of the same device. Goal: one owner
+of all device scanning (a background refresher) that pauses/releases a device the
+moment a user op needs it, a UI that always reads the in-memory cache, and a sync
+that warns when it would run against an unfinished refresh.
+
+**Locked decisions** (see "Decisions locked in" §Feature 10): checkpoint-and-continue
+resume · cache-only Preview · `file` pseudo-device uncoordinated · confirm sync when
+source/sink not `:complete` this session.
+
+**Design summary.**
+- **Coordinator** `src/dapr/device/coordinator.clj` (new): per-device-key **fair
+  `ReentrantLock`** (memoized in an atom). Foreground wins by blocking on `lock()`;
+  the single refresher thread polls `hasQueuedThreads()` at directory boundaries and
+  yields. `with-device!` (no-op for `"file"`), `with-devices!` (sorted acquire → a
+  sync touches source **and** sink, deadlock-free), `queued?` (yield signal).
+- **Refresher** `src/dapr/refresh.clj` (new): one daemon thread + a
+  `LinkedBlockingDeque` + a checkpoint atom `{lib-id -> {:pending-roots :stack
+  :seen}}`. `enqueue-all!` (source/sink to front), `refresh-one!`
+  (`with-device!` → resumable walk → on `:dapr/pause` checkpoint + re-enqueue; on
+  completion reconcile + `:complete`; on `:dapr/abort` discard), `run-loop!`.
+- **Resumable walk** `src/dapr/fs/nio.clj` (`walk-audio-tracks!`, 76–146): variant
+  taking an initial `stack`/`seen`/remaining-roots, an `on-batch` callback (for
+  incremental upsert), and **returning a checkpoint** on `:dapr/pause`. Safe because
+  the walk closes each `DirectoryStream` before descending — it holds no handle at a
+  `:dir` boundary, so the remaining `stack` is a complete resumable frontier.
+- **Split reconcile** `src/dapr/db/cache.clj` (`replace-library-tracks!`, 307–342):
+  `upsert-library-tracks!` (upsert-only, per-batch — freshens `library-catalog`
+  progressively; safe superset for the UI) + `reconcile-library-tracks!`
+  (retract-gone, run **once** on full completion with the full `seen`). Keep the
+  combined fn for existing sync-time callers.
+- **State** `src/dapr/state.clj`: `:refresh {:status {} :active nil :progress {}}`
+  (per-lib `:pending|:scanning|:paused|:complete|:error`) + `:confirm nil`; pure
+  transitions `set-refresh-status`/`-active`/`-progress`, `library-complete?`,
+  `open-confirm`/`close-confirm`.
+- **Events** `src/dapr/ui/events.clj`: `start!`/`refresh-availability!` (264–279) and
+  `::select-source`/`::select-sink` (452–458) → **paint from cache** + enqueue /
+  re-prioritize (no ad-hoc scan). `run-preview!` (191–222) → cache-only (drop the
+  `build-plan!` scan). `::sync` (469) → gate on `library-complete?`, else
+  `open-confirm`; add `::sync-confirm`/`::sync-cancel`. `run-sync!` (224–250) wraps
+  `execute-plan!` in `with-devices!`. Add `pause-ex?` mirroring `superseded-ex?`
+  (73–78); retire the old scan path once unused.
+- **Wiring** `src/dapr/system.clj` + `resources/config.edn`: new `:dapr/coordinator`
+  and `:dapr/refresher` components (refresher deps state+cache+coordinator; threaded
+  into `make-handler`). Refresher **halts before `:dapr/devices`** closes sessions.
+- **UI** `src/dapr/ui/views.clj`: confirmation modal (Confirm→`::sync-confirm`,
+  Cancel→`::sync-cancel`) mirroring the settings modal; optional per-library refresh
+  indicator reading `:refresh`.
+
+**Phases** (each isolated / testable):
+- [ ] 1. Coordinator (`dapr.device.coordinator`) + `coordinator_test`.
+- [ ] 2. Cache split (`upsert-library-tracks!` / `reconcile-library-tracks!`).
+- [ ] 3. Resumable walk in `dapr.fs.nio` (checkpoint + `on-batch`).
+- [ ] 4. Refresher engine (`dapr.refresh`).
+- [ ] 5. Integrant wiring (`system.clj`/`config.edn`, halt ordering).
+- [ ] 6. Events rewire (paint-from-cache + enqueue; cache-only preview; `with-devices!`).
+- [ ] 7. Confirmation gate + modal view + refresh indicator.
+- [ ] 8. Cleanup: retire the old `reload-catalogs!` scan path.
+
+**Key edge cases.** Retract only on completion (a quit mid-refresh keeps
+stale-but-superset presences — safe; gate covers sync). File deleted while paused →
+retracted on completion; file modified in an already-walked dir → stale until next
+full refresh (accepted single-pass limit). Multi-root library → checkpoint remaining
+roots too. Source+sink on one device → `with-devices!` dedups to one lock. Confirm
+race → re-check `library-complete?` at confirm time. `:dapr/abort` checked before
+`:dapr/pause`. Incremental upsert reuses `tx-batch-size` batching.
+
+**Verification.** Unit (existing jimfs + stubbed `nio/catalog!`/`device-tag/tags!`
+setup): `coordinator_test` (foreground preempts background; two-device no-deadlock;
+`"file"` no-op); `nio_test` (paused-then-resumed walk == uninterrupted walk, no
+duplicate tag reads); `cache_test` (partial upsert has no retracts; reconcile
+retracts gone; downgrade protection holds); `state_test`/events (gate opens when
+incomplete, runs when complete, re-checks on confirm). `clojure -M:test` +
+`-M:integration`. Manual (`:run`/`verify`): large MTP/SMB library paints instantly
+from cache while a background refresh progresses; a sync mid-refresh pauses/releases
+the device, runs, then resume; the confirm dialog appears only when source/sink
+refresh is unfinished.
+
+**Files.** New: `src/dapr/device/coordinator.clj`, `src/dapr/refresh.clj`,
+`test/dapr/device/coordinator_test.clj`. Changed: `fs/nio.clj`, `db/cache.clj`,
+`state.clj`, `ui/events.clj`, `ui/views.clj`, `system.clj`, `resources/config.edn`;
+extend `nio_test`, `cache_test`, `state_test`, `sync_test`.
 
 ---
 
