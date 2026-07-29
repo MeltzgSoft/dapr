@@ -6,6 +6,12 @@
 (defn- track [name size root rel]
   {:name name :size size :root root :rel rel})
 
+(defn- tk
+  "The domain track key for a tag-less test track: [artist album title size rel]
+  with the tags nil (see lib/track-key)."
+  [size rel]
+  (lib/track-key {:size size :rel rel}))
+
 (defn- by-key [actions]
   (into {} (map (juxt :key identity)) actions))
 
@@ -20,19 +26,19 @@
         actions (plan/selection-plan
                  {:source-catalog source
                   :sink-catalog   sink
-                  :selected       #{["a.mp3" 10] ["Albums/b.mp3" 20] ["c.mp3" 30]}
+                  :selected       #{(tk 10 "a.mp3") (tk 20 "Albums/b.mp3") (tk 30 "c.mp3")}
                   :sink-roots     [{:uri "snk" :free-bytes 1000}]})
         idx (by-key actions)]
     (testing "a track already on the sink at the same rel is skipped (root excluded)"
-      (is (= :skip (:op (idx ["a.mp3" 10])))))
+      (is (= :skip (:op (idx (tk 10 "a.mp3"))))))
     (testing "a selected track absent from the sink is added at its source rel"
-      (let [m (idx ["Albums/b.mp3" 20])]
+      (let [m (idx (tk 20 "Albums/b.mp3"))]
         (is (= :add (:op m)))
         (is (= {:root "snk" :rel "Albums/b.mp3"} (:target m)))
         (is (= 20 (:size m))))
-      (is (= :add (:op (idx ["c.mp3" 30])))))
+      (is (= :add (:op (idx (tk 30 "c.mp3"))))))
     (testing "a sink-only track is kept (default :sink-only-handling :keep)"
-      (is (nil? (idx ["d.mp3" 40])))
+      (is (nil? (idx (tk 40 "d.mp3"))))
       (is (empty? (filter #(= :delete (:op %)) actions))))
     (testing "no move op is ever produced"
       (is (empty? (filter #(= :move (:op %)) actions))))
@@ -40,7 +46,7 @@
       (is (= actions
              (plan/selection-plan
               {:source-catalog source :sink-catalog sink
-               :selected #{["a.mp3" 10] ["Albums/b.mp3" 20] ["c.mp3" 30]}
+               :selected #{(tk 10 "a.mp3") (tk 20 "Albums/b.mp3") (tk 30 "c.mp3")}
                :sink-roots [{:uri "snk" :free-bytes 1000}]}))))))
 
 (deftest placement-test
@@ -48,14 +54,14 @@
     (testing "skips a root without room and uses the next that fits"
       (let [m (first (plan/selection-plan
                       {:source-catalog source :sink-catalog {}
-                       :selected #{["x.mp3" 30]}
+                       :selected #{(tk 30 "x.mp3")}
                        :sink-roots [{:uri "r0" :free-bytes 5} {:uri "r1" :free-bytes 100}]}))]
         (is (= :add (:op m)))
         (is (= "r1" (get-in m [:target :root])))))
     (testing "an add that fits no single root is blocked"
       (let [m (first (plan/selection-plan
                       {:source-catalog source :sink-catalog {}
-                       :selected #{["x.mp3" 30]}
+                       :selected #{(tk 30 "x.mp3")}
                        :sink-roots [{:uri "r0" :free-bytes 5}]}))]
         (is (= :blocked (:op m)))
         (is (= :no-room (:reason m)))))
@@ -64,7 +70,7 @@
                                (track "q.mp3" 30 "src" "q.mp3")])
             ops  (->> (plan/selection-plan
                        {:source-catalog src2 :sink-catalog {}
-                        :selected #{["p.mp3" 30] ["q.mp3" 30]}
+                        :selected #{(tk 30 "p.mp3") (tk 30 "q.mp3")}
                         :sink-roots [{:uri "r0" :free-bytes 50}]})
                       (map :op)
                       (frequencies))]
@@ -80,7 +86,7 @@
         ;; would retain it and zero the delete counts).
         actions (plan/selection-plan
                  {:source-catalog source :sink-catalog sink
-                  :selected #{["new.mp3" 100] ["A/keep.mp3" 5]}
+                  :selected #{(tk 100 "new.mp3") (tk 5 "A/keep.mp3")}
                   :sink-roots [{:uri "snk" :free-bytes 1000}]
                   :sink-only-handling :delete})]
     (testing "counts ops and bytes added/freed"
@@ -100,7 +106,7 @@
         plan-with (fn [handling source-roots]
                     (plan/selection-plan
                      {:source-catalog source :sink-catalog sink
-                      :selected #{["a.mp3" 10]}
+                      :selected #{(tk 10 "a.mp3")}
                       :sink-roots [{:uri "snk" :free-bytes 1000}]
                       :sink-only-handling handling
                       :source-roots source-roots}))]
@@ -110,15 +116,15 @@
     (testing ":delete removes the unselected sink-only track"
       (let [acts (plan-with :delete nil)
             m    (by-key acts)]
-        (is (= :delete (:op (m ["d.mp3" 40]))))))
+        (is (= :delete (:op (m (tk 40 "d.mp3")))))))
     (testing ":add-to-source keeps it and copies it back into the source"
       (let [acts (plan-with :add-to-source [{:uri "src" :free-bytes 1000}])
             m    (by-key acts)]
         (is (empty? (filter #(= :delete (:op %)) acts)))
-        (is (= :add-to-source (:op (m ["d.mp3" 40]))))
-        (is (= {:root "src" :rel "d.mp3"} (:target (m ["d.mp3" 40]))))))
+        (is (= :add-to-source (:op (m (tk 40 "d.mp3")))))
+        (is (= {:root "src" :rel "d.mp3"} (:target (m (tk 40 "d.mp3")))))))
     (testing ":add-to-source blocks the copy when no source root has room"
       (let [acts (plan-with :add-to-source [{:uri "src" :free-bytes 5}])
             m    (by-key acts)]
-        (is (= :blocked (:op (m ["d.mp3" 40]))))
-        (is (= :no-room (:reason (m ["d.mp3" 40]))))))))
+        (is (= :blocked (:op (m (tk 40 "d.mp3")))))
+        (is (= :no-room (:reason (m (tk 40 "d.mp3")))))))))

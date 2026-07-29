@@ -61,17 +61,21 @@
     (is (false? (lib/audio-file? "x.mp3" #{"dsf"})))))
 
 (deftest track-key-test
-  (testing "identity is [rel size], with the root excluded"
-    (is (= ["a/song.mp3" 42] (lib/track-key {:name "song.mp3" :size 42 :rel "a/song.mp3"})))))
+  (testing "identity is [artist album title size rel], with the root excluded"
+    (is (= ["Artist" "Album" "Song" 42 "a/song.mp3"]
+           (lib/track-key {:name "song.mp3" :size 42 :rel "a/song.mp3"
+                           :artist "Artist" :album "Album" :title "Song"})))
+    (is (= [nil nil nil 42 "a/song.mp3"]
+           (lib/track-key {:name "song.mp3" :size 42 :rel "a/song.mp3"})))))
 
 (deftest catalog-test
-  (testing "indexes tracks by [rel size]; first wins when two roots share a key"
+  (testing "indexes tracks by [artist album title size rel]; first wins when two roots share a key"
     (let [a  (track "a.mp3" 1 "r1" "a.mp3")
           b  (track "b.mp3" 2 "r1" "sub/b.mp3")
-          a2 (track "a.mp3" 1 "r2" "a.mp3")    ; same rel+size under another root
+          a2 (track "a.mp3" 1 "r2" "a.mp3")    ; same tags+size+rel under another root
           cat (lib/catalog [a b a2])]
-      (is (= #{["a.mp3" 1] ["sub/b.mp3" 2]} (set (keys cat))))
-      (is (= "r1" (:root (cat ["a.mp3" 1])))))))
+      (is (= #{[nil nil nil 1 "a.mp3"] [nil nil nil 2 "sub/b.mp3"]} (set (keys cat))))
+      (is (= "r1" (:root (cat [nil nil nil 1 "a.mp3"])))))))
 
 (deftest track-total-size-test
   (testing "sums sizes"

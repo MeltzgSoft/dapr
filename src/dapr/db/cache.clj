@@ -14,6 +14,7 @@
   (:require [clojure.edn :as edn]
             [clojure.java.io :as io]
             [datascript.core :as d]
+            [dapr.domain.library :as lib]
             [dapr.fs.paths :as paths])
   (:import (java.io File)
            (java.nio.file CopyOption Files StandardCopyOption)))
@@ -203,9 +204,10 @@
 
 (defn library-catalog
   "key -> track map for library `lib-eid`, in the shape the planner and table
-  expect: {:key [rel size] :rel :size :root :mtime :artist :album :title :genre
-  :track-number :disc-number :duration-millis :source}. :source is :embedded /
-  :path (how the tags were obtained). Missing tags/mtime come back as nil."
+  expect: {:key [artist album title size rel] :rel :size :root :mtime :artist
+  :album :title :genre :track-number :disc-number :duration-millis :source}.
+  :source is :embedded / :path (how the tags were obtained). Missing tags/mtime
+  come back as nil. Keyed by the domain track key (see dapr.domain.library)."
   [db lib-eid]
   (->> (d/q '[:find [(pull ?p [:presence/root :presence/mtime
                                {:presence/track [:track/rel :track/size :track/tag-source
@@ -218,12 +220,12 @@
        (reduce (fn [acc {:keys [presence/root presence/mtime presence/track]}]
                  (let [{:keys [track/rel track/size track/artist track/album track/title
                                track/genre track/track-number track/disc-number
-                               track/duration-millis track/tag-source]} track]
-                   (assoc acc [rel size]
-                          {:key             [rel size] :rel rel :size size :root root :mtime mtime
-                           :artist          artist :album album :title title :genre genre
-                           :track-number    track-number :disc-number disc-number
-                           :duration-millis duration-millis :source tag-source})))
+                               track/duration-millis track/tag-source]} track
+                       t {:rel             rel :size size :root root :mtime mtime
+                          :artist          artist :album album :title title :genre genre
+                          :track-number    track-number :disc-number disc-number
+                          :duration-millis duration-millis :source tag-source}]
+                   (assoc acc (lib/track-key t) (assoc t :key (lib/track-key t)))))
                {})))
 
 (defn track-libraries
@@ -326,7 +328,7 @@
                              :when (not (want [rel size]))]
                          [:db/retractEntity p]))
          upserts  (filter (fn [t]
-                            (needs-upsert? (cached [(:rel t) (:size t)])
+                            (needs-upsert? (cached (lib/track-key t))
                                            (src-of [(:rel t) (:size t)]) t))
                           tracks)]
      (when (seq retract)

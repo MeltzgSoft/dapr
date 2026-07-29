@@ -149,7 +149,7 @@
   "Resolve the union of the source and sink catalogs into a sorted vector of row
   maps for the track table, one per track: {:key :disc-number :track-number :title
   :duration-millis :artist :album :genre :size :sink-rel :in-source? :on? :disable}.
-  Rows sort by artist/album/title (the table
+  Rows sort by disc/track/album/artist (the table
   lets the user re-sort by any column). Capacity is checked in constant time per
   row against the selection's remaining free bytes (computed once from :capacity),
   so this stays O(n) even for libraries of many thousands of tracks — see
@@ -166,8 +166,8 @@
         handling (get settings :sink-only-handling :keep)
         locked?  (contains? #{:keep :add-to-source} handling)]
     (->> (vals (fmt/filter-catalog (merge sink-catalog source-catalog) filter))
-         (sort-by (juxt (comp fmt/sort-key :artist) (comp fmt/sort-key :album)
-                        (comp fmt/sort-key :title) :rel))
+         (sort-by (juxt :disc-number :track-number
+                        (comp fmt/sort-key :album) (comp fmt/sort-key :artist) :rel))
          (mapv (fn [t]
                  (let [k          (:key t)
                        in-source? (contains? source-catalog k)

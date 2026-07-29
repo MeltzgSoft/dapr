@@ -12,6 +12,13 @@
    :duration-millis duration-millis
    :root (or root "file:///r/") :mtime mtime :source source})
 
+(defn- by-file
+  "Re-index a catalog (keyed by the domain track key [artist album title size rel])
+  by physical file [rel size], so a test can look a track up by its stable file
+  identity regardless of its tags."
+  [cat]
+  (into {} (map (fn [[_ t]] [[(:rel t) (:size t)] t])) cat))
+
 (deftest library-crud-test
   (let [conn (cache/empty-conn)
         a    (cache/upsert-library! conn {:name "A" :roots ["file:///a/"]})
@@ -112,9 +119,10 @@
       (cache/replace-library-tracks!
        conn a [(track "Artist/Album/One.mp3" 10 :artist "Artist" :album "Album" :title "One" :mtime 111)
                (track "Two.flac" 20 :title "Two")])
-      (let [cat (cache/library-catalog (d/db conn) a)]
+      (let [cat (by-file (cache/library-catalog (d/db conn) a))]
         (is (= #{["Artist/Album/One.mp3" 10] ["Two.flac" 20]} (set (keys cat))))
-        (is (= {:key   ["Artist/Album/One.mp3" 10] :rel "Artist/Album/One.mp3" :size 10
+        (is (= {:key   ["Artist" "Album" "One" 10 "Artist/Album/One.mp3"]
+                :rel   "Artist/Album/One.mp3" :size 10
                 :root  "file:///r/" :mtime 111 :artist "Artist" :album "Album" :title "One"
                 :genre nil :track-number nil :disc-number nil :duration-millis nil
                 :source nil}
@@ -125,7 +133,7 @@
       (cache/replace-library-tracks! conn a [(track "Two.flac" 20 :title "Two")
                                              (track "Three.mp3" 30)])
       (is (= #{["Two.flac" 20] ["Three.mp3" 30]}
-             (set (keys (cache/library-catalog (d/db conn) a))))))))
+             (set (keys (by-file (cache/library-catalog (d/db conn) a)))))))))
 
 (deftest extended-tag-fields-round-trip-test
   (let [conn (cache/empty-conn)
@@ -136,7 +144,7 @@
                     :source :embedded :mtime 111)])
     (testing "genre / track / disc / duration are stored and returned by the catalog"
       (is (= {:genre "Rock" :track-number 3 :disc-number 1 :duration-millis 210000}
-             (select-keys (get (cache/library-catalog (d/db conn) a) ["Artist/Album/One.mp3" 10])
+             (select-keys (get (by-file (cache/library-catalog (d/db conn) a)) ["Artist/Album/One.mp3" 10])
                           [:genre :track-number :disc-number :duration-millis]))))
     (testing "an unchanged re-scan transacts nothing (extended fields are part of the diff)"
       (let [before (d/db conn)]
@@ -150,7 +158,7 @@
        conn a [(track "Artist/Album/One.mp3" 10 :artist "Artist" :album "Album" :title "One"
                       :genre "Jazz" :track-number 3 :disc-number 1 :duration-millis 210000
                       :source :embedded :mtime 111)])
-      (is (= "Jazz" (:genre (get (cache/library-catalog (d/db conn) a) ["Artist/Album/One.mp3" 10])))))))
+      (is (= "Jazz" (:genre (get (by-file (cache/library-catalog (d/db conn) a)) ["Artist/Album/One.mp3" 10])))))))
 
 (deftest large-rescan-no-overflow-test
   (testing "re-scanning a large library (every track an upsert) doesn't overflow
@@ -176,19 +184,19 @@
     (cache/replace-library-tracks! conn b [(track "x.mp3" 1 :artist "Path" :source :path
                                                   :root "smb://h/s/")])
     (testing "a path-derived scan records its presence but does not downgrade embedded tags"
-      (let [ca (get (cache/library-catalog (d/db conn) a) ["x.mp3" 1])]
+      (let [ca (get (by-file (cache/library-catalog (d/db conn) a)) ["x.mp3" 1])]
         (is (= "Real" (:artist ca)))
         (is (= :embedded (:source ca))))
       (is (= #{a b} (set (cache/track-libraries (d/db conn) "x.mp3" 1)))))
 
     (testing "a later embedded scan still updates the tags"
       (cache/replace-library-tracks! conn a [(track "x.mp3" 1 :artist "Real2" :source :embedded)])
-      (is (= "Real2" (:artist (get (cache/library-catalog (d/db conn) a) ["x.mp3" 1])))))
+      (is (= "Real2" (:artist (get (by-file (cache/library-catalog (d/db conn) a)) ["x.mp3" 1])))))
 
     (testing "path tags still fill in a track that has none yet"
       (cache/replace-library-tracks! conn b [(track "y.mp3" 2 :artist "PathY" :source :path
                                                     :root "smb://h/s/")])
-      (is (= "PathY" (:artist (get (cache/library-catalog (d/db conn) b) ["y.mp3" 2])))))))
+      (is (= "PathY" (:artist (get (by-file (cache/library-catalog (d/db conn) b)) ["y.mp3" 2])))))))
 
 (deftest incremental-replace-test
   (let [conn (cache/empty-conn)
@@ -208,7 +216,7 @@
       (cache/replace-library-tracks!
        conn lib [(track "a.mp3" 1 :artist "A2" :mtime 11)   ; changed tag + mtime
                  (track "c.mp3" 3 :artist "C" :mtime 30)])  ; added (b removed)
-      (let [cat (cache/library-catalog (d/db conn) lib)]
+      (let [cat (by-file (cache/library-catalog (d/db conn) lib))]
         (is (= #{["a.mp3" 1] ["c.mp3" 3]} (set (keys cat))))
         (is (= "A2" (:artist (get cat ["a.mp3" 1]))))))))
 
