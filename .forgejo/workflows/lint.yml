@@ -1,0 +1,35 @@
+name: Lint
+
+on:
+  push:
+    branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
+
+jobs:
+  lint:
+    runs-on: linux
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up JDK 25
+        uses: https://github.com/actions/setup-java@v5
+        with:
+          java-version: '25'
+          distribution: temurin
+
+      - name: Install Clojure CLI
+        # See tests.yml: setup-clojure calls the GitHub API even for pinned
+        # versions; the official installer involves no GitHub at all.
+        run: |
+          curl -sLO https://download.clojure.org/install/linux-install-1.12.4.1618.sh
+          chmod +x linux-install-1.12.4.1618.sh
+          ./linux-install-1.12.4.1618.sh
+
+      # dev/src is passed as a path arg rather than being on the classpath --
+      # see the :cljfmt/:clj-kondo aliases in deps.edn.
+      - name: Formatting
+        run: clojure -M:cljfmt check src test test-integration dev/src build.clj
+
+      - name: Linting
+        run: clojure -M:clj-kondo --lint src --lint test --lint test-integration --lint dev/src

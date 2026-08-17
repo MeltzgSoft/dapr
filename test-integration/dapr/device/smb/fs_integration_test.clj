@@ -4,13 +4,16 @@
   cannot cover. Part of `clojure -M:integration` (not the hermetic default
   `clojure -X:test`).
 
-  The :once fixture picks its SMB backend by OS, because GitHub's hosted runners
-  differ (see integration.yml):
+  The :once fixture picks its SMB backend by OS and by whether one was handed to
+  it, because the runners differ (see .forgejo/workflows/tests.yml, integration.yml):
 
-    - Linux: start a dperson/samba server in a Docker container via Testcontainers,
-      so no host setup is needed. Bound to the host's port 445 (jcifs ignores a
-      non-default SMB port, so a random mapped port would not work); that port
-      must be free.
+    - Forge CI: TEST_SMB_GUEST_URL/TEST_SMB_AUTH_URL name two samba sidecars, and
+      the fixture starts nothing. Forge jobs get no docker socket (usb-ci
+      #22/NFR-5), so Testcontainers cannot run there at all.
+    - Linux otherwise: start a dperson/samba server in a Docker container via
+      Testcontainers, so no host setup is needed. Bound to the host's port 445
+      (jcifs ignores a non-default SMB port, so a random mapped port would not
+      work); that port must be free. This stays the local-dev default.
     - macOS / Windows: those runners can't run the Linux Samba image (no Docker on
       macOS; Windows runs only Windows containers), so the CI workflow instead
       provisions the host's *native* SMB server (see integration.yml) with Music
@@ -31,11 +34,26 @@
            (org.testcontainers.containers FixedHostPortGenericContainer)
            (org.testcontainers.containers.wait.strategy Wait)))
 
-;; The server listens on 445; the guest share is reached via 127.0.0.1 and the
-;; authenticated share via localhost — distinct host strings so dapr.device.smb.fs's
-;; per-host FileSystem cache keeps the anonymous and authenticated connections apart.
-(def ^:private guest-url  "smb://127.0.0.1/Music/")
-(def ^:private auth-url   "smb://localhost/Private/")
+;; The guest share is reached via one host string and the authenticated share via
+;; another — distinct hosts so dapr.device.smb.fs's per-host FileSystem cache keeps
+;; the anonymous and authenticated connections apart. With Testcontainers, and on the
+;; native macOS/Windows servers, that is one server on port 445 under two names.
+;;
+;; The forge runs jobs in containers with no docker socket (usb-ci #22/NFR-5), so
+;; Testcontainers cannot work there and two samba sidecars supply the server instead;
+;; TEST_SMB_GUEST_URL/TEST_SMB_AUTH_URL point at them (.forgejo/workflows/tests.yml).
+;; Each sidecar declares BOTH shares, so enumeration against the guest host still sees
+;; Music and Private. Unset locally, so the zero-setup Testcontainers path is unchanged.
+;; Public because the tag integration test shares this fixture and its URLs.
+(def guest-url (or (System/getenv "TEST_SMB_GUEST_URL") "smb://127.0.0.1/Music/"))
+(def auth-url  (or (System/getenv "TEST_SMB_AUTH_URL")  "smb://localhost/Private/"))
+
+;; The guest host's server root, for share enumeration: "smb://h/Music/" -> "smb://h/".
+(def ^:private guest-root (second (re-find #"^(smb://[^/]+/)" guest-url)))
+
+;; A sidecar-provided server means there is no container for this JVM to start.
+(def ^:private sidecar? (some? (System/getenv "TEST_SMB_GUEST_URL")))
+
 ;; Password satisfies Windows' local-account complexity policy (New-LocalUser
 ;; rejects a simple one), so the same credentials work on every backend.
 (def ^:private auth-creds {:username "dapr" :password "Secretpass1!"})
@@ -78,7 +96,7 @@
   race. On macOS/Windows there is no container — the native CI server is used
   as-is — so this only flips backend-ready?."
   []
-  (when (and linux? (nil? @container))
+  (when (and linux? (not sidecar?) (nil? @container))
     (let [c (start-samba!)]
       (reset! container c)
       (.addShutdownHook (Runtime/getRuntime)
@@ -141,7 +159,7 @@
 (deftest share-enumeration-test
   (when (running?)
     (testing "listing the SMB server root returns its shares, minus admin shares"
-      (let [names (set (map :name (device-fs/dir-children! "smb://127.0.0.1/")))]
+      (let [names (set (map :name (device-fs/dir-children! guest-root)))]
         (is (contains? names "Music") (str "expected 'Music' among " names))
         (is (contains? names "Private") (str "expected 'Private' among " names))
         (is (not-any? #(str/ends-with? % "$") names)
@@ -177,6 +195,6 @@
         (smb/close-all!)
         (is (not (.isOpen fs)) "close-all! should close the cached FileSystem")))
     (testing "the cache reopens on demand after close-all! (safe across a system reset)"
-      (let [names (set (map :name (device-fs/dir-children! "smb://127.0.0.1/")))]
+      (let [names (set (map :name (device-fs/dir-children! guest-root)))]
         (is (contains? names "Music")
             (str "operations should work again after close-all!, got " names))))))

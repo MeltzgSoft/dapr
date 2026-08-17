@@ -1,11 +1,16 @@
 name: Test
 
+# Everyday CI runs on the forge now (usb-ci FR-10.2, .forgejo/workflows/); this
+# file stays on GitHub purely as release.yml's gate. The pull_request and push
+# triggers are gone deliberately (FR-2.7): mirror pushes fire GitHub workflows,
+# so leaving them would re-run this whole 3-OS matrix on every sync.
 on:
-  pull_request:
-  push:
-    branches: [main]
-  # Callable as a gate from other workflows (e.g. release.yml) so the release
-  # validates on the same matrix as CI.
+  # Callable from release.yml so the release still validates on the
+  # windows/mac/linux matrix the lab cannot provide (FR-10.17: macos-latest and
+  # windows-latest do not exist self-hosted, and macOS has no substitute).
+  # Reusable-workflow expansion is public-repos-only (FR-10.16) -- this repo is
+  # public, and both caller and callee live here, so no cross-instance
+  # reference disables it.
   workflow_call:
 
 jobs:

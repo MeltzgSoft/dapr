@@ -11,12 +11,15 @@ name: Integration
 #              up the host's native SMB server with the same shares instead.
 # The MTP tests run only when a real device is attached, so they skip in CI.
 
+# Everyday CI runs on the forge now (usb-ci FR-10.2, .forgejo/workflows/), where
+# the Linux SMB leg uses samba sidecars instead of Testcontainers -- forge jobs
+# hold no docker socket (usb-ci #22/NFR-5). This file stays on GitHub purely as
+# release.yml's gate, and is where the macOS and Windows SMB legs still run.
+# The pull_request and push triggers are gone deliberately (FR-2.7): mirror
+# pushes fire GitHub workflows, so leaving them would re-run this whole matrix
+# on every sync.
 on:
-  pull_request:
-  push:
-    branches: [main]
-  # Callable as a gate from other workflows (e.g. release.yml) so the release
-  # validates on the same matrix as CI.
+  # Callable from release.yml -- see the note in test.yml on FR-10.16/FR-10.17.
   workflow_call:
 
 jobs:
