@@ -5,20 +5,30 @@ name: Test
 # triggers are gone deliberately (FR-2.7): mirror pushes fire GitHub workflows,
 # so leaving them would re-run this whole 3-OS matrix on every sync.
 on:
-  # Callable from release.yml so the release still validates on the
-  # windows/mac/linux matrix the lab cannot provide (FR-10.17: macos-latest and
-  # windows-latest do not exist self-hosted, and macOS has no substitute).
+  # Callable from release.yml so the release still validates on the full
+  # windows/mac/linux matrix. The forge covers linux and Windows unit tests on
+  # its own runners; macOS is the leg with no self-hosted substitute at all
+  # (FR-10.17), so the release is where it gets proven.
   # Reusable-workflow expansion is public-repos-only (FR-10.16) -- this repo is
   # public, and both caller and callee live here, so no cross-instance
   # reference disables it.
   workflow_call:
+    inputs:
+      os-list:
+        description: >-
+          JSON array of runner labels to test on. release.yml takes the default
+          (the full matrix); macos.yml narrows it to macOS so the leg the forge
+          cannot cover still runs on every commit reaching main.
+        type: string
+        required: false
+        default: '["ubuntu-latest", "macos-latest", "windows-latest"]'
 
 jobs:
   test:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
+        os: ${{ fromJSON(inputs.os-list) }}
     runs-on: ${{ matrix.os }}
     steps:
       - name: Checkout

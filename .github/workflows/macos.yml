@@ -1,0 +1,29 @@
+name: macOS
+
+# macOS is the one leg with no self-hosted substitute (usb-ci FR-10.17): the
+# forge covers linux and Windows, so this is the only OS whose regressions
+# nothing else would catch.
+#
+# Running it only as release.yml's gate meant finding out at tag time, with the
+# release already in motion. This runs the macOS unit and integration legs on
+# every commit that reaches main -- which after migration means every mirror
+# sync, since the forge is where commits actually land. That re-run cost is the
+# point, not an accident: main is exactly what a release gets cut from.
+#
+# It reuses test.yml/integration.yml rather than restating their steps, so the
+# macOS leg here and the macOS leg in the release gate cannot drift apart.
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  test:
+    uses: ./.github/workflows/test.yml
+    with:
+      os-list: '["macos-latest"]'
+
+  integration:
+    uses: ./.github/workflows/integration.yml
+    with:
+      os-list: '["macos-latest"]'

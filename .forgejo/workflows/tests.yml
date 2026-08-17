@@ -1,10 +1,13 @@
 name: CI
 
-# Forge CI (usb-ci FR-10.2): the tier-1 suites on every push and PR. The
-# release path stays on GitHub (FR-10.4) -- see .github/workflows/release.yml,
-# which still gates on the full windows/mac/linux matrix that this runner
-# cannot provide (FR-10.17: macos-latest and windows-latest do not exist
-# self-hosted, and macOS has no substitute).
+# Forge CI (usb-ci FR-10.2): the tier-1 suites on every push and PR.
+#
+# The OS split follows FR-10.17 literally: windows-latest does not exist here
+# but Windows does, so that leg is RELABELLED (runs-on: windows) rather than
+# dropped; macOS has no substitute and is the one leg that cannot move.
+# .github/workflows/release.yml still gates the release on the full
+# windows/mac/linux matrix, which is where macOS -- and the Windows and macOS
+# SMB integration legs -- continue to run (FR-10.4).
 
 on:
   push:
@@ -37,6 +40,42 @@ jobs:
           ./linux-install-1.12.4.1618.sh
 
       - name: Run unit tests
+        run: clojure -M:test
+
+  test-windows:
+    # The bare platform label, NOT windows-usb: windows-usb selects the device
+    # executor for jobs that need the USB controller (FR-4.2, FR-9.9). This is
+    # an ordinary build, and win-runner is registered as both -- "general
+    # Windows builder + device executor" (FR-4.9).
+    #
+    # That runner is host mode, CAPACITY 1, so this job and a device job cannot
+    # overlap: whichever starts first makes the other wait. Unit tests are
+    # minutes and dapr's PR traffic is low, so the contention is bounded -- but
+    # if device runs start queueing behind CI, this is the job to move to a tag
+    # or a nightly rather than every PR.
+    #
+    # Host mode also means no containers: JS actions run on the guest's own
+    # node, installed once per usb-ci docs/device-runners.md.
+    runs-on: windows
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up JDK 25
+        uses: https://github.com/actions/setup-java@v5
+        with:
+          java-version: '25'
+          distribution: temurin
+
+      - name: Install Clojure CLI
+        # Official Windows installer, for the same reason the Linux jobs avoid
+        # setup-clojure: no GitHub API call, so no Forgejo GITHUB_TOKEN 401.
+        shell: pwsh
+        run: |
+          Invoke-WebRequest https://download.clojure.org/install/win-install-1.12.4.1618.ps1 -OutFile win-install.ps1
+          .\win-install.ps1
+
+      - name: Run unit tests
+        shell: pwsh
         run: clojure -M:test
 
   integration:
@@ -104,4 +143,51 @@ jobs:
 
       - name: Run integration tests
         # MTP skips without a device attached; SMB runs against the sidecars.
+        run: clojure -M:integration
+
+  integration-windows:
+    # Same runner and same capacity-1 caveat as test-windows above.
+    #
+    # No sidecars and no TEST_SMB_* here, deliberately: host mode has no service
+    # containers, so this leg uses the guest's NATIVE SMB server, exactly as the
+    # GitHub Windows leg does. The fixture's non-Linux path already points at
+    # 127.0.0.1/localhost and authenticates as dapr, so it needs no change.
+    #
+    # That server is provisioned ONCE at bring-up rather than per job:
+    # smb-setup-windows.ps1 needs admin (New-LocalUser, New-SmbShare, icacls)
+    # and the runner service deliberately runs as the non-admin ci-runner
+    # (usb-ci TS 6.1). The shares are machine state like node and python before
+    # them, so they live in usb-ci docs/device-runners.md -- which is also the
+    # recovery path after a VM revert. If they are missing, these tests fail
+    # rather than skip, by design.
+    runs-on: windows
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up JDK 25
+        uses: https://github.com/actions/setup-java@v5
+        with:
+          java-version: '25'
+          distribution: temurin
+
+      - name: Install Clojure CLI
+        shell: pwsh
+        run: |
+          Invoke-WebRequest https://download.clojure.org/install/win-install-1.12.4.1618.ps1 -OutFile win-install.ps1
+          .\win-install.ps1
+
+      - name: Check the native SMB shares are provisioned
+        # Fail with the reason rather than letting jcifs report a connection
+        # error thirty lines into a test run.
+        shell: pwsh
+        run: |
+          foreach ($s in 'Music','Private') {
+            if (-not (Get-SmbShare -Name $s -ErrorAction SilentlyContinue)) {
+              throw "SMB share '$s' is missing. Provision this runner per usb-ci docs/device-runners.md (smb-setup-windows.ps1, as admin, once)."
+            }
+          }
+          Write-Host 'Music and Private shares present'
+
+      - name: Run integration tests
+        shell: pwsh
         run: clojure -M:integration
