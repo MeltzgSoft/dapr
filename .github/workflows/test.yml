@@ -6,9 +6,11 @@ name: Test
 # so leaving them would re-run this whole 3-OS matrix on every sync.
 on:
   # Callable from release.yml so the release still validates on the full
-  # windows/mac/linux matrix. The forge covers linux and Windows unit tests on
-  # its own runners; macOS is the leg with no self-hosted substitute at all
-  # (FR-10.17), so the release is where it gets proven.
+  # windows/mac/linux matrix. The forge covers linux and Windows -- unit and
+  # integration alike -- on its own runners; macOS is the leg with no
+  # self-hosted substitute at all (FR-10.17), so GitHub is the only place it
+  # can run, and macos.yml calls this on every push to main so it is not
+  # deferred to release time.
   # Reusable-workflow expansion is public-repos-only (FR-10.16) -- this repo is
   # public, and both caller and callee live here, so no cross-instance
   # reference disables it.

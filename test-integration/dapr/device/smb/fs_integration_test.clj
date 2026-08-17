@@ -14,13 +14,19 @@
       Testcontainers, so no host setup is needed. Bound to the host's port 445
       (jcifs ignores a non-default SMB port, so a random mapped port would not
       work); that port must be free. This stays the local-dev default.
-    - macOS / Windows: those runners can't run the Linux Samba image (no Docker on
-      macOS; Windows runs only Windows containers), so the CI workflow instead
-      provisions the host's *native* SMB server (see integration.yml) with Music
-      and Private shares on port 445, both reachable by user dapr. Native guest
-      SMB is unavailable on these runners (Windows hardens it off; macOS needs
-      GUI-granted Full Disk Access for smbd), so the fixture authenticates every
-      host there — the anonymous code path is exercised by the Linux run.
+    - macOS / Windows: those hosts can't run the Linux Samba image (no Docker on
+      macOS; Windows runs only Windows containers), so the *native* SMB server is
+      used instead, with Music and Private shares on port 445 reachable by user
+      dapr. Native guest SMB is unavailable there (Windows hardens it off; macOS
+      needs GUI-granted Full Disk Access for smbd), so the fixture authenticates
+      every host — the anonymous code path is exercised by the Linux run.
+
+      This path serves both Windows runners. On GitHub the workflow provisions
+      the shares per job (smb-setup-windows.ps1 on a throwaway runner); on the
+      forge's win-runner they are provisioned once as admin, because that runner
+      is host mode, its service runs non-admin, and its machine state persists
+      (usb-ci docs/device-runners.md). The fixture cannot tell the difference,
+      which is the point.
 
   Either way there is no graceful skip: if the Linux container can't start, or the
   native shares aren't reachable, the tests fail rather than silently pass."

@@ -15,13 +15,18 @@ name: Integration
 # the Linux SMB leg uses samba sidecars instead of Testcontainers -- forge jobs
 # hold no docker socket (usb-ci #22/NFR-5).
 #
-# This file stays on GitHub purely as release.yml's gate, and is where the macOS
-# and Windows SMB legs still run. Windows UNIT tests did move to the forge, but
-# not this suite: win-runner is host mode, so it has no service containers to
-# supply Samba, and the alternative -- provisioning the guest's native SMB
-# server as smb-setup-windows.ps1 does on a throwaway GitHub runner -- would
-# mutate persistent shared machine state on a VM whose disk is a revertible
-# overlay (usb-ci docs/device-runners.md).
+# The Windows leg moved too, and uses the guest's NATIVE SMB server there --
+# win-runner is host mode, so it has no service containers, which makes it the
+# same shape as the Windows job below. The difference is only who provisions
+# the shares: a throwaway GitHub runner runs smb-setup-windows.ps1 per job,
+# while the forge guest is provisioned once as admin (usb-ci
+# docs/device-runners.md), because its runner service is deliberately non-admin
+# and its machine state persists between jobs.
+#
+# So this file stays on GitHub purely as release.yml's gate, and macOS is the
+# only leg that runs nowhere else (FR-10.17) -- which is why macos.yml also
+# calls it on every push to main, rather than leaving macOS unproven until a
+# tag is cut.
 # The pull_request and push triggers are gone deliberately (FR-2.7): mirror
 # pushes fire GitHub workflows, so leaving them would re-run this whole matrix
 # on every sync.
