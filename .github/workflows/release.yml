@@ -43,6 +43,17 @@ jobs:
       contents: read
       statuses: read
     steps:
+      # workflow_dispatch can be pointed at any ref, and everything downstream
+      # assumes a v#.#.# tag: DAPR_VERSION is ${{ github.ref_name }}, so a
+      # dispatch from main would build dapr-main-*.jar and publish a GitHub
+      # Release tagged "main". Checked BEFORE the override, because the override
+      # exists to skip a missing hardware result during a lab outage -- never to
+      # release from a branch.
+      - name: Require a semantic-version tag ref
+        run: |
+          [[ "$GITHUB_REF_NAME" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] \
+            || { echo "::error::run this from a v#.#.# tag ref, not '$GITHUB_REF_NAME'"; exit 1; }
+
       - name: Require the forge/device-tests status on the released commit
         env:
           GH_TOKEN: ${{ github.token }}
