@@ -23,7 +23,10 @@
 ;; guest share URL.
 (use-fixtures :once smb-it/with-smb-backend)
 
-(def ^:private guest-url "smb://127.0.0.1/Music/")
+;; Taken from the fixture rather than repeated: on the forge the guest share is a
+;; sidecar named by TEST_SMB_GUEST_URL, not 127.0.0.1, and a second literal here
+;; would silently keep pointing at a server this job never starts.
+(def ^:private guest-url smb-it/guest-url)
 
 (defn- seed-file-at!
   "Write `bytes` to a fresh temp dir at the nested relative path `rel` (creating

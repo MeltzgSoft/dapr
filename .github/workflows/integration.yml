@@ -11,20 +11,43 @@ name: Integration
 #              up the host's native SMB server with the same shares instead.
 # The MTP tests run only when a real device is attached, so they skip in CI.
 
+# Everyday CI runs on the forge now (usb-ci FR-10.2, .forgejo/workflows/), where
+# the Linux SMB leg uses samba sidecars instead of Testcontainers -- forge jobs
+# hold no docker socket (usb-ci #22/NFR-5).
+#
+# The Windows leg moved too, and uses the guest's NATIVE SMB server there --
+# win-runner is host mode, so it has no service containers, which makes it the
+# same shape as the Windows job below. The difference is only who provisions
+# the shares: a throwaway GitHub runner runs smb-setup-windows.ps1 per job,
+# while the forge guest is provisioned once as admin (usb-ci
+# docs/device-runners.md), because its runner service is deliberately non-admin
+# and its machine state persists between jobs.
+#
+# So this file stays on GitHub purely as release.yml's gate, and macOS is the
+# only leg that runs nowhere else (FR-10.17) -- which is why macos.yml also
+# calls it on every push to main, rather than leaving macOS unproven until a
+# tag is cut.
+# The pull_request and push triggers are gone deliberately (FR-2.7): mirror
+# pushes fire GitHub workflows, so leaving them would re-run this whole matrix
+# on every sync.
 on:
-  pull_request:
-  push:
-    branches: [main]
-  # Callable as a gate from other workflows (e.g. release.yml) so the release
-  # validates on the same matrix as CI.
+  # Callable from release.yml -- see the note in test.yml on FR-10.16/FR-10.17.
   workflow_call:
+    inputs:
+      os-list:
+        description: >-
+          JSON array of runner labels to test on. release.yml takes the default
+          (the full matrix); macos.yml narrows it to macOS.
+        type: string
+        required: false
+        default: '["ubuntu-latest", "macos-latest", "windows-latest"]'
 
 jobs:
   integration:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
+        os: ${{ fromJSON(inputs.os-list) }}
     runs-on: ${{ matrix.os }}
     steps:
       - name: Checkout

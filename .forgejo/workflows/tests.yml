@@ -1,0 +1,198 @@
+name: CI
+
+# Forge CI (usb-ci FR-10.2): the tier-1 suites on every push and PR.
+#
+# The OS split follows FR-10.17 literally: windows-latest does not exist here
+# but Windows does, so both Windows legs are RELABELLED (runs-on: windows)
+# rather than dropped. macOS has no substitute and is the one leg that cannot
+# move at all; it runs on GitHub, on every push to main (.github/workflows/
+# macos.yml) as well as in the release gate, so a macOS regression surfaces at
+# the commit rather than at the tag.
+#
+# .github/workflows/release.yml still gates the release on the full
+# windows/mac/linux matrix (FR-10.4) -- by then linux and Windows have normally
+# already run here, and macOS on the same commit, so the gate confirms rather
+# than discovers.
+
+on:
+  push:
+    branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
+
+jobs:
+  test:
+    # The general runner (usb-ci TS 6.2), label `linux`.
+    runs-on: linux
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up JDK 25
+        uses: https://github.com/actions/setup-java@v5
+        with:
+          java-version: '25'
+          distribution: temurin
+
+      - name: Install Clojure CLI
+        # NOT DeLaGuardo/setup-clojure: it authenticates to api.github.com with
+        # the job's GITHUB_TOKEN -- a Forgejo token here -- and 401s, even for a
+        # pinned version, because it sends the header on the release-asset
+        # download too (usb-ci docs/migration.md). The official installer
+        # involves no GitHub at all.
+        run: |
+          curl -sLO https://download.clojure.org/install/linux-install-1.12.4.1618.sh
+          chmod +x linux-install-1.12.4.1618.sh
+          ./linux-install-1.12.4.1618.sh
+
+      - name: Run unit tests
+        run: clojure -M:test
+
+  test-windows:
+    # The bare platform label, NOT windows-usb: windows-usb selects the device
+    # executor for jobs that need the USB controller (FR-4.2, FR-9.9). This is
+    # an ordinary build, and win-runner is registered as both -- "general
+    # Windows builder + device executor" (FR-4.9).
+    #
+    # That runner is host mode, CAPACITY 1, so this job and a device job cannot
+    # overlap: whichever starts first makes the other wait. Unit tests are
+    # minutes and dapr's PR traffic is low, so the contention is bounded -- but
+    # if device runs start queueing behind CI, this is the job to move to a tag
+    # or a nightly rather than every PR.
+    #
+    # Host mode also means no containers: JS actions run on the guest's own
+    # node, installed once per usb-ci docs/device-runners.md.
+    runs-on: windows
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up JDK 25
+        uses: https://github.com/actions/setup-java@v5
+        with:
+          java-version: '25'
+          distribution: temurin
+
+      - name: Install Clojure CLI
+        # Official Windows installer, for the same reason the Linux jobs avoid
+        # setup-clojure: no GitHub API call, so no Forgejo GITHUB_TOKEN 401.
+        shell: pwsh
+        run: |
+          Invoke-WebRequest https://download.clojure.org/install/win-install-1.12.4.1618.ps1 -OutFile win-install.ps1
+          .\win-install.ps1
+
+      - name: Run unit tests
+        shell: pwsh
+        run: clojure -M:test
+
+  integration:
+    runs-on: linux
+
+    # Forge jobs hold no docker socket (usb-ci #22/NFR-5), so the SMB fixture's
+    # Testcontainers path cannot run here. Two samba sidecars stand in, and the
+    # fixture takes them from the environment instead of starting anything --
+    # the same injection seam pigeon-scoops-backend uses for Postgres.
+    #
+    # TWO servers, not one, because the fixture reaches the guest and
+    # authenticated shares through DIFFERENT host strings: dapr.device.smb.fs
+    # caches one FileSystem per host, and a single hostname would collapse the
+    # anonymous and authenticated connections into one cache entry. Each
+    # declares BOTH shares, so share enumeration against the guest host still
+    # sees Music and Private.
+    #
+    # Pinned by digest, not by a tag: :latest tags get cached and silently go
+    # stale (usb-ci #57). This digest is smbd-only-latest as verified on
+    # 2026-08-17 -- guest read/write, authenticated read/write, and anonymous
+    # access to Private correctly refused.
+    env:
+      TEST_SMB_GUEST_URL: smb://samba-guest/Music/
+      TEST_SMB_AUTH_URL: smb://samba-auth/Private/
+
+    # Written out twice rather than shared with a YAML anchor: Forgejo's parser
+    # expands anchors but GitHub Actions rejects them, and workflow files in this
+    # repo get copied between the two.
+    #
+    # `root preexec` creates the share directory: this image ships none and
+    # expects a volume, and a share whose path is missing fails every tree
+    # connect with NT_STATUS_BAD_NETWORK_NAME. Doing it here keeps the sidecars
+    # configurable by environment alone -- services: has no command field, and
+    # act_runner may refuse volume mounts.
+    services:
+      samba-guest:
+        image: ghcr.io/servercontainers/samba@sha256:a789aa42c2e5db804fab5fb5dd5f2d4343a9a8a7789e4a191aab45e993c15d4f
+        env:
+          ACCOUNT_dapr: Secretpass1!
+          UID_dapr: "1000"
+          SAMBA_VOLUME_CONFIG_music: "[Music]; path=/shares/music; guest ok = yes; read only = no; browseable = yes; force user = root; root preexec = mkdir -p /shares/music"
+          SAMBA_VOLUME_CONFIG_private: "[Private]; path=/shares/private; valid users = dapr; guest ok = no; read only = no; browseable = yes; force user = root; root preexec = mkdir -p /shares/private"
+      samba-auth:
+        image: ghcr.io/servercontainers/samba@sha256:a789aa42c2e5db804fab5fb5dd5f2d4343a9a8a7789e4a191aab45e993c15d4f
+        env:
+          ACCOUNT_dapr: Secretpass1!
+          UID_dapr: "1000"
+          SAMBA_VOLUME_CONFIG_music: "[Music]; path=/shares/music; guest ok = yes; read only = no; browseable = yes; force user = root; root preexec = mkdir -p /shares/music"
+          SAMBA_VOLUME_CONFIG_private: "[Private]; path=/shares/private; valid users = dapr; guest ok = no; read only = no; browseable = yes; force user = root; root preexec = mkdir -p /shares/private"
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up JDK 25
+        uses: https://github.com/actions/setup-java@v5
+        with:
+          java-version: '25'
+          distribution: temurin
+
+      - name: Install Clojure CLI
+        run: |
+          curl -sLO https://download.clojure.org/install/linux-install-1.12.4.1618.sh
+          chmod +x linux-install-1.12.4.1618.sh
+          ./linux-install-1.12.4.1618.sh
+
+      - name: Run integration tests
+        # MTP skips without a device attached; SMB runs against the sidecars.
+        run: clojure -M:integration
+
+  integration-windows:
+    # Same runner and same capacity-1 caveat as test-windows above.
+    #
+    # No sidecars and no TEST_SMB_* here, deliberately: host mode has no service
+    # containers, so this leg uses the guest's NATIVE SMB server, exactly as the
+    # GitHub Windows leg does. The fixture's non-Linux path already points at
+    # 127.0.0.1/localhost and authenticates as dapr, so it needs no change.
+    #
+    # That server is provisioned ONCE at bring-up rather than per job:
+    # smb-setup-windows.ps1 needs admin (New-LocalUser, New-SmbShare, icacls)
+    # and the runner service deliberately runs as the non-admin ci-runner
+    # (usb-ci TS 6.1). The shares are machine state like node and python before
+    # them, so they live in usb-ci docs/device-runners.md -- which is also the
+    # recovery path after a VM revert. If they are missing, these tests fail
+    # rather than skip, by design.
+    runs-on: windows
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up JDK 25
+        uses: https://github.com/actions/setup-java@v5
+        with:
+          java-version: '25'
+          distribution: temurin
+
+      - name: Install Clojure CLI
+        shell: pwsh
+        run: |
+          Invoke-WebRequest https://download.clojure.org/install/win-install-1.12.4.1618.ps1 -OutFile win-install.ps1
+          .\win-install.ps1
+
+      - name: Check the native SMB shares are provisioned
+        # Fail with the reason rather than letting jcifs report a connection
+        # error thirty lines into a test run.
+        shell: pwsh
+        run: |
+          foreach ($s in 'Music','Private') {
+            if (-not (Get-SmbShare -Name $s -ErrorAction SilentlyContinue)) {
+              throw "SMB share '$s' is missing. Provision this runner per usb-ci docs/device-runners.md (smb-setup-windows.ps1, as admin, once)."
+            }
+          }
+          Write-Host 'Music and Private shares present'
+
+      - name: Run integration tests
+        shell: pwsh
+        run: clojure -M:integration

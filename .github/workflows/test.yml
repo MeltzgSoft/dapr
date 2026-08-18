@@ -1,19 +1,36 @@
 name: Test
 
+# Everyday CI runs on the forge now (usb-ci FR-10.2, .forgejo/workflows/); this
+# file stays on GitHub purely as release.yml's gate. The pull_request and push
+# triggers are gone deliberately (FR-2.7): mirror pushes fire GitHub workflows,
+# so leaving them would re-run this whole 3-OS matrix on every sync.
 on:
-  pull_request:
-  push:
-    branches: [main]
-  # Callable as a gate from other workflows (e.g. release.yml) so the release
-  # validates on the same matrix as CI.
+  # Callable from release.yml so the release still validates on the full
+  # windows/mac/linux matrix. The forge covers linux and Windows -- unit and
+  # integration alike -- on its own runners; macOS is the leg with no
+  # self-hosted substitute at all (FR-10.17), so GitHub is the only place it
+  # can run, and macos.yml calls this on every push to main so it is not
+  # deferred to release time.
+  # Reusable-workflow expansion is public-repos-only (FR-10.16) -- this repo is
+  # public, and both caller and callee live here, so no cross-instance
+  # reference disables it.
   workflow_call:
+    inputs:
+      os-list:
+        description: >-
+          JSON array of runner labels to test on. release.yml takes the default
+          (the full matrix); macos.yml narrows it to macOS so the leg the forge
+          cannot cover still runs on every commit reaching main.
+        type: string
+        required: false
+        default: '["ubuntu-latest", "macos-latest", "windows-latest"]'
 
 jobs:
   test:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
+        os: ${{ fromJSON(inputs.os-list) }}
     runs-on: ${{ matrix.os }}
     steps:
       - name: Checkout
