@@ -69,15 +69,43 @@ jobs:
           # GITHUB_SHA: for annotated tags GITHUB_SHA can be the tag object, and
           # statuses live on commits.
           sha=$(gh api "repos/$GITHUB_REPOSITORY/commits/$GITHUB_REF_NAME" --jq .sha)
-          state=$(gh api "repos/$GITHUB_REPOSITORY/commits/$sha/status" \
-            --jq '[.statuses[] | select(.context == "forge/device-tests")][0].state // "missing"')
-          echo "forge/device-tests on $sha: $state"
-          if [ "$state" != "success" ]; then
-            echo "::error::the released commit has no passing hardware run ($state). The forge posts" \
-              "forge/device-tests for every main push; wait for it, fix it, or -- lab outage only --" \
-              "re-run via workflow_dispatch with override_hardware_gate=true and a reason." >&2
-            exit 1
-          fi
+
+          # WAIT for a verdict rather than demanding one already exists. A tag
+          # reaches GitHub within seconds of being pushed, but the forge is still
+          # running that commit's device tests -- minutes, behind a capacity-1
+          # runner and the device lock. Asking once loses that race whenever a tag
+          # closely follows a merge, which is the normal way to cut a release, and
+          # it did: dapr v0.1.2's gate failed 5s in, then the status landed ~90s
+          # later and the identical commit passed.
+          #
+          # Fail-closed is unchanged (FR-10.10): no verdict inside the window is
+          # still a failure. Only "not yet" waits; a real FAILURE exits
+          # immediately, because a failed hardware run will not become a passing
+          # one by waiting.
+          for attempt in $(seq 1 20); do
+            state=$(gh api "repos/$GITHUB_REPOSITORY/commits/$sha/status" \
+              --jq '[.statuses[] | select(.context == "forge/device-tests")][0].state // "missing"')
+            case "$state" in
+              success)
+                echo "forge/device-tests on $sha: success"
+                exit 0
+                ;;
+              failure|error)
+                echo "::error::the released commit FAILED its hardware run ($state). Fix it and tag" \
+                  "again, or -- lab outage only -- re-run via workflow_dispatch with" \
+                  "override_hardware_gate=true and a reason." >&2
+                exit 1
+                ;;
+              *)
+                echo "attempt $attempt/20: forge/device-tests on $sha is '$state'; waiting 30s"
+                ;;
+            esac
+            sleep 30
+          done
+          echo "::error::no forge/device-tests verdict for $sha after 10 minutes. The forge posts it" \
+            "for every main push; check the run there, or -- lab outage only -- re-run via" \
+            "workflow_dispatch with override_hardware_gate=true and a reason." >&2
+          exit 1
 
   # Gate the release on the full CI matrix: no jars are built or published unless
   # the unit + integration suites pass on every OS. These reuse the same
