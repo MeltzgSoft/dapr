@@ -14,6 +14,7 @@
             [clojure.test :refer [deftest is testing]]
             [dapr.device.fs :as device-fs]
             [dapr.device.mtp.fs :as mtp]
+            [dapr.device.mtp.require-device :as require-device]
             [dapr.fs.nio :as nio])
   (:import (java.nio.file Files)
            (java.nio.file.attribute FileAttribute)))
@@ -29,8 +30,11 @@
                  (mtp/devices!)))
     (catch Throwable _ nil)))
 
-(defn- skip [why]
-  (println (str "  (skipping MTP integration test — " why ")")))
+(defn- skip
+  "Device absence: a printed skip normally, a failure under DAPR_REQUIRE_DEVICE
+  (set on the device runners, where a silent all-skip would prove nothing)."
+  [why]
+  (require-device/skip-or-fail "MTP integration test" why))
 
 (deftest device-discovery-test
   (if-not devices

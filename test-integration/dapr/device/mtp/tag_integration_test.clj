@@ -24,6 +24,7 @@
             [dapr.audio-fixtures :as fixtures]
             [dapr.device.fs :as device-fs]
             [dapr.device.mtp.fs :as mtp]
+            [dapr.device.mtp.require-device :as require-device]
             [dapr.device.mtp.tag]
             [dapr.device.tag :as tag]
             [dapr.fs.nio :as nio])
@@ -40,8 +41,15 @@
                  (mtp/devices!)))
     (catch Throwable _ nil)))
 
-(defn- skip [why]
+(defn- skip
+  "A skip that stays a skip: used for what a particular device cannot do."
+  [why]
   (println (str "  (skipping MTP tag integration test — " why ")")))
+
+(defn- skip-absent
+  "Device absence specifically -- fails instead under DAPR_REQUIRE_DEVICE."
+  [why]
+  (require-device/skip-or-fail "MTP tag integration test" why))
 
 (defn- supports-partial-reads? []
   (try (.supportsPartialReads (MTPDeviceBridge/getInstance)) (catch Throwable _ false)))
@@ -97,7 +105,7 @@
 
 (deftest reads-embedded-tags-from-device-test
   (if-not devices
-    (skip "no MTP device attached")
+    (skip-absent "no MTP device attached")
     (if-let [storage (first-storage)]
       (with-device-fixture
         storage "fixture.flac" (fixtures/flac-bytes fixture-tags)
@@ -125,7 +133,7 @@
 
 (deftest degrades-to-path-for-unsupported-format-test
   (if-not devices
-    (skip "no MTP device attached")
+    (skip-absent "no MTP device attached")
     (if-let [storage (first-storage)]
       (with-device-fixture
         storage "not-really.xyz" (.getBytes "not an audio file" "US-ASCII")
