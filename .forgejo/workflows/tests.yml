@@ -20,6 +20,16 @@ on:
   pull_request:
     branches: [ "main" ]
 
+# One device, so one run of this workflow at a time. cancel-in-progress stays
+# false: superseded PENDING runs die before touching hardware (the safe half of
+# auto-cancel, usb-ci FR-4.8), but cancelling in flight can orphan the lease
+# until its TTL expires even though release is if: always(). The cost is that
+# lint/test queue behind a device run too -- acceptable at this repo's traffic,
+# and the alternative is a second workflow file duplicating the triggers.
+concurrency:
+  group: dapr-device-tests
+  cancel-in-progress: false
+
 jobs:
   test:
     # The general runner (usb-ci TS 6.2), label `linux`.
@@ -98,54 +108,28 @@ jobs:
         shell: pwsh
         run: clojure -M:test
 
+  # Both integration jobs run on the DEVICE runners (FR-4.2, FR-9.9/9.10):
+  # linux-usb/windows-usb select the executor that can receive the USB
+  # controller, and device-mtp is the capability label, because these tests
+  # exercise whatever MTP device is attached. The same label goes to
+  # --device-label: one vocabulary for dispatch and acquire.
+  #
+  # DAPR_REQUIRE_DEVICE turns a device-absent skip into a failure. Without it a
+  # job could acquire the lock, hot-plug the controller, skip every MTP test and
+  # report success -- "Ran 5 tests containing 0 assertions" is green while
+  # proving nothing.
   integration:
-    runs-on: linux
-
-    # Forge jobs hold no docker socket (usb-ci #22/NFR-5), so the SMB fixture's
-    # Testcontainers path cannot run here. Two samba sidecars stand in, and the
-    # fixture takes them from the environment instead of starting anything --
-    # the same injection seam pigeon-scoops-backend uses for Postgres.
-    #
-    # TWO servers, not one, because the fixture reaches the guest and
-    # authenticated shares through DIFFERENT host strings: dapr.device.smb.fs
-    # caches one FileSystem per host, and a single hostname would collapse the
-    # anonymous and authenticated connections into one cache entry. Each
-    # declares BOTH shares, so share enumeration against the guest host still
-    # sees Music and Private.
-    #
-    # Pinned by digest, not by a tag: :latest tags get cached and silently go
-    # stale (usb-ci #57). This digest is smbd-only-latest as verified on
-    # 2026-08-17 -- guest read/write, authenticated read/write, and anonymous
-    # access to Private correctly refused.
+    runs-on: [linux-usb, device-mtp]
     env:
-      TEST_SMB_GUEST_URL: smb://samba-guest/Music/
-      TEST_SMB_AUTH_URL: smb://samba-auth/Private/
-
-    # Written out twice rather than shared with a YAML anchor: Forgejo's parser
-    # expands anchors but GitHub Actions rejects them, and workflow files in this
-    # repo get copied between the two.
-    #
-    # `root preexec` creates the share directory: this image ships none and
-    # expects a volume, and a share whose path is missing fails every tree
-    # connect with NT_STATUS_BAD_NETWORK_NAME. Doing it here keeps the sidecars
-    # configurable by environment alone -- services: has no command field, and
-    # act_runner may refuse volume mounts.
-    services:
-      samba-guest:
-        image: ghcr.io/servercontainers/samba@sha256:a789aa42c2e5db804fab5fb5dd5f2d4343a9a8a7789e4a191aab45e993c15d4f
-        env:
-          ACCOUNT_dapr: Secretpass1!
-          UID_dapr: "1000"
-          SAMBA_VOLUME_CONFIG_music: "[Music]; path=/shares/music; guest ok = yes; read only = no; browseable = yes; force user = root; root preexec = mkdir -p /shares/music"
-          SAMBA_VOLUME_CONFIG_private: "[Private]; path=/shares/private; valid users = dapr; guest ok = no; read only = no; browseable = yes; force user = root; root preexec = mkdir -p /shares/private"
-      samba-auth:
-        image: ghcr.io/servercontainers/samba@sha256:a789aa42c2e5db804fab5fb5dd5f2d4343a9a8a7789e4a191aab45e993c15d4f
-        env:
-          ACCOUNT_dapr: Secretpass1!
-          UID_dapr: "1000"
-          SAMBA_VOLUME_CONFIG_music: "[Music]; path=/shares/music; guest ok = yes; read only = no; browseable = yes; force user = root; root preexec = mkdir -p /shares/music"
-          SAMBA_VOLUME_CONFIG_private: "[Private]; path=/shares/private; valid users = dapr; guest ok = no; read only = no; browseable = yes; force user = root; root preexec = mkdir -p /shares/private"
-
+      LOCKSERVICE_URL: ${{ vars.LOCKSERVICE_URL }}
+      DAPR_REQUIRE_DEVICE: "1"
+      # No sidecars: host mode has no service containers. SMB comes from the
+      # guest's own samba, provisioned once at bring-up (usb-ci
+      # docs/device-runners.md) exactly as win-runner's shares are. Setting
+      # these also stops the fixture reaching for Testcontainers, which cannot
+      # work without a docker socket.
+      TEST_SMB_GUEST_URL: smb://127.0.0.1/Music/
+      TEST_SMB_AUTH_URL: smb://localhost/Private/
     steps:
       - uses: actions/checkout@v4
 
@@ -156,31 +140,59 @@ jobs:
           distribution: temurin
 
       - name: Install Clojure CLI
+        # --prefix into the job's own HOME: host mode means the runner user is
+        # not root, and a job must not sudo or apt-get inside a VM it shares
+        # with every other job.
         run: |
           curl -sLO https://download.clojure.org/install/linux-install-1.12.4.1618.sh
           chmod +x linux-install-1.12.4.1618.sh
-          ./linux-install-1.12.4.1618.sh
+          ./linux-install-1.12.4.1618.sh --prefix "$HOME/clojure"
+          echo "$HOME/clojure/bin" >> "$GITHUB_PATH"
+
+      - name: Check the native SMB shares are provisioned
+        run: |
+          command -v smbclient >/dev/null || { echo "smbclient missing; provision this runner per usb-ci docs/device-runners.md" >&2; exit 1; }
+          for share in Music Private; do
+            smbclient -L //127.0.0.1 -N 2>/dev/null | grep -qw "$share" \
+              || { echo "SMB share '$share' is missing. Provision this runner per usb-ci docs/device-runners.md (.forgejo/scripts/smb-setup-linux.sh, as root, once)." >&2; exit 1; }
+          done
+          echo "Music and Private shares present"
+
+      # TS 6.1 step 0: the service serves its own client, so this job always
+      # runs the client that matches the deployed service. No copy lives in
+      # this repo, deliberately -- copies drift with the service API.
+      - name: Fetch the lock client
+        run: curl -fsS "$LOCKSERVICE_URL/client/devicelock.py" -o devicelock.py
+
+      # python3, not python: Ubuntu ships no `python` alias (recorded scar from
+      # the GitHub-runner era of usb-ci's device-tests.yml).
+      - name: Acquire device lock
+        run: python3 devicelock.py acquire --target linux --device-label device-mtp
+
+      # FR-9.8: confirm the guest actually enumerates the vendor:product the
+      # catalog declares for the attached type -- the only check that catches a
+      # hardware swap nobody re-declared.
+      - name: Verify the attached device
+        run: python3 devicelock.py verify
 
       - name: Run integration tests
-        # MTP skips without a device attached; SMB runs against the sidecars.
         run: clojure -M:integration
 
+      - name: Release device lock
+        if: always()
+        run: python3 devicelock.py release
+
   integration-windows:
-    # Same runner and same capacity-1 caveat as test-windows above.
-    #
-    # No sidecars and no TEST_SMB_* here, deliberately: host mode has no service
-    # containers, so this leg uses the guest's NATIVE SMB server, exactly as the
-    # GitHub Windows leg does. The fixture's non-Linux path already points at
-    # 127.0.0.1/localhost and authenticates as dapr, so it needs no change.
-    #
-    # That server is provisioned ONCE at bring-up rather than per job:
-    # smb-setup-windows.ps1 needs admin (New-LocalUser, New-SmbShare, icacls)
-    # and the runner service deliberately runs as the non-admin ci-runner
-    # (usb-ci TS 6.1). The shares are machine state like node and python before
-    # them, so they live in usb-ci docs/device-runners.md -- which is also the
-    # recovery path after a VM revert. If they are missing, these tests fail
-    # rather than skip, by design.
-    runs-on: windows
+    runs-on: [windows-usb, device-mtp]
+    env:
+      LOCKSERVICE_URL: ${{ vars.LOCKSERVICE_URL }}
+      DAPR_REQUIRE_DEVICE: "1"
+    # No sidecars and no TEST_SMB_* here: host mode has no service containers,
+    # and the fixture's non-Linux path already targets the guest's native SMB
+    # server at 127.0.0.1/localhost, authenticating as dapr. Those shares are
+    # provisioned once at bring-up (usb-ci docs/device-runners.md), because
+    # smb-setup-windows.ps1 needs admin and the runner service deliberately
+    # runs as the non-admin ci-runner.
     steps:
       - uses: actions/checkout@v4
 
@@ -191,17 +203,6 @@ jobs:
           distribution: temurin
 
       - name: Install Clojure CLI
-        # NOT win-install.ps1, and NOT setup-clojure. The official Windows
-        # installer is INTERACTIVE -- it lists the PSModulePath entries and
-        # calls Read-Host for a choice -- so in a runner it fails outright.
-        # setup-clojure is the other trap: it authenticates to api.github.com
-        # with the job's GITHUB_TOKEN, a Forgejo token here, and 401s.
-        #
-        # So install the module the installer would have installed: the same
-        # clojure-tools.zip, expanded into a user module path. Anonymous
-        # download, no prompt, and no admin -- which matters because the runner
-        # service runs as the non-admin ci-runner (usb-ci TS 6.1). Later pwsh
-        # steps auto-load it because the destination is on PSModulePath.
         shell: pwsh
         run: |
           $ver = '1.12.4.1618'
@@ -214,8 +215,6 @@ jobs:
           clojure -Sdescribe
 
       - name: Check the native SMB shares are provisioned
-        # Fail with the reason rather than letting jcifs report a connection
-        # error thirty lines into a test run.
         shell: pwsh
         run: |
           foreach ($s in 'Music','Private') {
@@ -225,6 +224,70 @@ jobs:
           }
           Write-Host 'Music and Private shares present'
 
+      - name: Fetch the lock client
+        shell: pwsh
+        run: Invoke-WebRequest "$env:LOCKSERVICE_URL/client/devicelock.py" -OutFile devicelock.py
+
+      - name: Acquire device lock
+        shell: pwsh
+        run: python devicelock.py acquire --target windows --device-label device-mtp
+
+      - name: Verify the attached device
+        shell: pwsh
+        run: python devicelock.py verify
+
       - name: Run integration tests
         shell: pwsh
         run: clojure -M:integration
+
+      - name: Release device lock
+        if: always()
+        shell: pwsh
+        run: python devicelock.py release
+
+  # The release gate's forge half (usb-ci FR-10.9-10.12, TS 6.3): publish the
+  # hardware outcome to the GitHub mirror as a commit status for this SHA, which
+  # release.yml over there requires before publishing. Push runs only -- PR-branch
+  # SHAs need not exist on the mirror, and releases tag main commits. Runs on the
+  # general runner: it needs api.github.com, not hardware. Fail closed cuts both
+  # ways (FR-10.10): a status that cannot be posted fails THIS job loudly, because
+  # a status that silently never lands is a release that silently never unblocks.
+  report:
+    if: always() && github.event_name == 'push'
+    needs: [integration, integration-windows]
+    runs-on: linux
+    env:
+      WINDOWS_RESULT: ${{ needs['integration-windows'].result }}
+      LINUX_RESULT: ${{ needs.integration.result }}
+      STATUS_TOKEN: ${{ secrets.MIRROR_STATUS_TOKEN }}
+      TARGET_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_number }}
+    steps:
+      - name: Post the hardware outcome to the GitHub mirror
+        run: |
+          set -euo pipefail
+          if [ -z "$STATUS_TOKEN" ]; then
+            echo "MIRROR_STATUS_TOKEN is not set; cannot post the hardware status." >&2
+            echo "Releases stay blocked until it is (FR-10.10, fail closed)." >&2
+            exit 1
+          fi
+          state=failure
+          [ "$WINDOWS_RESULT" = success ] && [ "$LINUX_RESULT" = success ] && state=success
+          # The mirror syncs on commit, but this post can still race the SHA's
+          # arrival on GitHub (TS 6.3) -- retry, don't fail on the first
+          # "No commit found".
+          for attempt in $(seq 1 10); do
+            code=$(curl -sS -o resp.json -w '%{http_code}' -X POST \
+              -H "Authorization: Bearer $STATUS_TOKEN" \
+              -H "Accept: application/vnd.github+json" \
+              "https://api.github.com/repos/$GITHUB_REPOSITORY/statuses/$GITHUB_SHA" \
+              -d "{\"state\":\"$state\",\"context\":\"forge/device-tests\",\"description\":\"windows: $WINDOWS_RESULT, linux: $LINUX_RESULT\",\"target_url\":\"$TARGET_URL\"}")
+            if [ "$code" = 201 ]; then
+              echo "posted $state for $GITHUB_SHA"
+              exit 0
+            fi
+            echo "attempt $attempt/10: HTTP $code"
+            cat resp.json || true
+            sleep 15
+          done
+          echo "never posted the status; the release gate stays closed (FR-10.10)" >&2
+          exit 1

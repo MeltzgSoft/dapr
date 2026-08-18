@@ -9,11 +9,65 @@ on:
   push:
     tags:
       - 'v[0-9]+.[0-9]+.[0-9]+'
+  # The gate override (usb-ci FR-10.12): with the lab down, dispatch this
+  # workflow from the tag's ref with override_hardware_gate=true and a reason.
+  # The dispatch inputs in the run log are the trace -- bypassing must be
+  # deliberate and recorded, never "disable the check and forget".
+  workflow_dispatch:
+    inputs:
+      override_hardware_gate:
+        description: "Skip the forge/device-tests status gate (lab outage only)"
+        type: boolean
+        default: false
+      reason:
+        description: "Why the gate is being overridden (recorded in this run's log)"
+        required: false
+        default: ""
 
 permissions:
   contents: write
 
 jobs:
+  # The release gate's GitHub half (usb-ci FR-10.8-10.12). The forge runs the
+  # real-device integration tests and posts the outcome for each main SHA as the
+  # commit status `forge/device-tests` (tests.yml's report job). No status, or a
+  # failed one, blocks the release -- fail closed (FR-10.10), keyed to the exact
+  # commit being released (FR-10.11), never to recency.
+  #
+  # Outbound-only by design (FR-10.9): GitHub-hosted runners cannot reach the
+  # forge behind the home network, so the forge pushes the result here rather
+  # than this job pulling it.
+  hardware-gate:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      statuses: read
+    steps:
+      - name: Require the forge/device-tests status on the released commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+          OVERRIDE: ${{ inputs.override_hardware_gate }}
+          REASON: ${{ inputs.reason }}
+        run: |
+          set -euo pipefail
+          if [ "${OVERRIDE:-false}" = "true" ]; then
+            echo "::warning::hardware gate OVERRIDDEN (FR-10.12). Reason: ${REASON:-none given}"
+            exit 0
+          fi
+          # Resolve the tag to its commit through the API rather than trusting
+          # GITHUB_SHA: for annotated tags GITHUB_SHA can be the tag object, and
+          # statuses live on commits.
+          sha=$(gh api "repos/$GITHUB_REPOSITORY/commits/$GITHUB_REF_NAME" --jq .sha)
+          state=$(gh api "repos/$GITHUB_REPOSITORY/commits/$sha/status" \
+            --jq '[.statuses[] | select(.context == "forge/device-tests")][0].state // "missing"')
+          echo "forge/device-tests on $sha: $state"
+          if [ "$state" != "success" ]; then
+            echo "::error::the released commit has no passing hardware run ($state). The forge posts" \
+              "forge/device-tests for every main push; wait for it, fix it, or -- lab outage only --" \
+              "re-run via workflow_dispatch with override_hardware_gate=true and a reason." >&2
+            exit 1
+          fi
+
   # Gate the release on the full CI matrix: no jars are built or published unless
   # the unit + integration suites pass on every OS. These reuse the same
   # workflows CI runs (windows/mac/linux matrix, native SMB provisioning, etc.).
@@ -24,7 +78,7 @@ jobs:
     uses: ./.github/workflows/integration.yml
 
   build:
-    needs: [test, integration]
+    needs: [hardware-gate, test, integration]
     strategy:
       fail-fast: false
       matrix:
