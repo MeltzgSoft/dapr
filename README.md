@@ -176,6 +176,18 @@ clojure -M:cljfmt check        # or: clojure -M:cljfmt fix
 clojure -T:build uber
 ```
 
+### Where development happens
+
+Source of truth is a self-hosted Forgejo forge; **GitHub is a read-only push
+mirror**. Issues and pull requests live on the forge, and issues are disabled
+on the mirror rather than left to look open for business.
+
+CI runs on the forge (`.forgejo/workflows/`): lint, unit and integration on
+Linux and Windows. macOS has no self-hosted runner, so that leg runs on GitHub
+on every push to `main` (`.github/workflows/macos.yml`) and again as the
+release gate — the workflows on GitHub are the release path plus macOS, not
+everyday CI.
+
 ### Running a release jar
 
 Release uberjars are published per OS by the `Release` workflow on each
