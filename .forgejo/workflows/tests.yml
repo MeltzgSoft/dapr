@@ -72,12 +72,27 @@ jobs:
           distribution: temurin
 
       - name: Install Clojure CLI
-        # Official Windows installer, for the same reason the Linux jobs avoid
-        # setup-clojure: no GitHub API call, so no Forgejo GITHUB_TOKEN 401.
+        # NOT win-install.ps1, and NOT setup-clojure. The official Windows
+        # installer is INTERACTIVE -- it lists the PSModulePath entries and
+        # calls Read-Host for a choice -- so in a runner it fails outright.
+        # setup-clojure is the other trap: it authenticates to api.github.com
+        # with the job's GITHUB_TOKEN, a Forgejo token here, and 401s.
+        #
+        # So install the module the installer would have installed: the same
+        # clojure-tools.zip, expanded into a user module path. Anonymous
+        # download, no prompt, and no admin -- which matters because the runner
+        # service runs as the non-admin ci-runner (usb-ci TS 6.1). Later pwsh
+        # steps auto-load it because the destination is on PSModulePath.
         shell: pwsh
         run: |
-          Invoke-WebRequest https://download.clojure.org/install/win-install-1.12.4.1618.ps1 -OutFile win-install.ps1
-          .\win-install.ps1
+          $ver = '1.12.4.1618'
+          Invoke-WebRequest "https://github.com/clojure/brew-install/releases/download/$ver/clojure-tools.zip" -OutFile clojure-tools.zip
+          $dest = Join-Path $HOME 'Documents\PowerShell\Modules'
+          New-Item -ItemType Directory -Force -Path $dest | Out-Null
+          Expand-Archive clojure-tools.zip -DestinationPath $dest -Force
+          Remove-Item clojure-tools.zip
+          Import-Module ClojureTools
+          clojure -Sdescribe
 
       - name: Run unit tests
         shell: pwsh
@@ -176,10 +191,27 @@ jobs:
           distribution: temurin
 
       - name: Install Clojure CLI
+        # NOT win-install.ps1, and NOT setup-clojure. The official Windows
+        # installer is INTERACTIVE -- it lists the PSModulePath entries and
+        # calls Read-Host for a choice -- so in a runner it fails outright.
+        # setup-clojure is the other trap: it authenticates to api.github.com
+        # with the job's GITHUB_TOKEN, a Forgejo token here, and 401s.
+        #
+        # So install the module the installer would have installed: the same
+        # clojure-tools.zip, expanded into a user module path. Anonymous
+        # download, no prompt, and no admin -- which matters because the runner
+        # service runs as the non-admin ci-runner (usb-ci TS 6.1). Later pwsh
+        # steps auto-load it because the destination is on PSModulePath.
         shell: pwsh
         run: |
-          Invoke-WebRequest https://download.clojure.org/install/win-install-1.12.4.1618.ps1 -OutFile win-install.ps1
-          .\win-install.ps1
+          $ver = '1.12.4.1618'
+          Invoke-WebRequest "https://github.com/clojure/brew-install/releases/download/$ver/clojure-tools.zip" -OutFile clojure-tools.zip
+          $dest = Join-Path $HOME 'Documents\PowerShell\Modules'
+          New-Item -ItemType Directory -Force -Path $dest | Out-Null
+          Expand-Archive clojure-tools.zip -DestinationPath $dest -Force
+          Remove-Item clojure-tools.zip
+          Import-Module ClojureTools
+          clojure -Sdescribe
 
       - name: Check the native SMB shares are provisioned
         # Fail with the reason rather than letting jcifs report a connection
