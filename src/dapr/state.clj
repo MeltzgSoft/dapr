@@ -32,10 +32,12 @@
    :status         :idle  ; :idle :scanning :planned :syncing :done :error
    :progress       nil    ; {:done n :total t}
    ;; Background library refresh (see dapr.refresh): per-library status
-   ;; (:pending/:scanning/:paused/:complete/:error), the library being walked right
-   ;; now, and its progress. Deliberately separate from :status, which tracks the
-   ;; *foreground* op — a refresh must never disable Preview/Sync.
-   :refresh        {:status {} :errors {} :active nil :progress nil}
+   ;; (:pending/:scanning/:paused/:complete/:error), failure reason and {:done
+   ;; :total} counters — all keyed by library id, since the status bar draws a row
+   ;; per library and a paused one keeps the counts it had reached. Deliberately
+   ;; separate from :status, which tracks the *foreground* op — a refresh must
+   ;; never disable Preview/Sync.
+   :refresh        {:status {} :errors {} :progress {}}
    :confirm        nil    ; pending confirmation dialog, or nil (see open-confirm)
    :log            []     ; vector of message strings (capped at max-log-lines)
    :log-appends    0      ; total lines ever appended; drives log auto-scroll
@@ -43,6 +45,7 @@
    :log-follow?    true   ; live log window auto-scrolls (follows) the newest line
    :log-scroll     0.0    ; last seen log scrollbar value (0..1); drives freeze detect
    :log-file       nil    ; path of the current log file (see dapr.log)
+   :jobs-open?     true   ; activity window's jobs sidebar expanded (see set-jobs-open)
    :error          nil})
 
 (def max-log-lines
@@ -391,18 +394,20 @@
   [state lib-id]
   (= :complete (refresh-status state lib-id)))
 
-(defn set-refresh-active
-  "Record the library currently being walked (nil when the refresher is idle),
-  clearing progress as it changes hands."
-  [state lib-id]
-  (-> state
-      (assoc-in [:refresh :active] lib-id)
-      (assoc-in [:refresh :progress] nil)))
-
 (defn set-refresh-progress
-  "Record {:done :total} for the library being walked (nil to clear)."
-  [state progress]
-  (assoc-in state [:refresh :progress] progress))
+  "Record {:done :total} for library `lib-id`'s walk (nil to clear it). Progress is
+  per library rather than a single 'currently walking' pair so a paused library
+  still shows how far it got — it resumes from exactly there."
+  [state lib-id progress]
+  (if progress
+    (assoc-in state [:refresh :progress lib-id] progress)
+    (update-in state [:refresh :progress] dissoc lib-id)))
+
+(defn refresh-progress
+  "Library `lib-id`'s {:done :total} counters, or nil before its walk has listed
+  anything."
+  [state lib-id]
+  (get-in state [:refresh :progress lib-id]))
 
 (defn forget-refresh
   "Drop library `lib-id` from the refresh projection (it was deleted)."
@@ -410,8 +415,7 @@
   (-> state
       (update-in [:refresh :status] dissoc lib-id)
       (update-in [:refresh :errors] dissoc lib-id)
-      (cond-> (= lib-id (get-in state [:refresh :active]))
-        (set-refresh-active nil))))
+      (update-in [:refresh :progress] dissoc lib-id)))
 
 (defn sync-incomplete-libraries
   "The chosen source/sink libraries whose refresh has not completed this session —
@@ -486,6 +490,14 @@
   "Hide the live log window."
   [state]
   (assoc state :log-open? false))
+
+(defn set-jobs-open
+  "Expand or collapse the activity window's jobs sidebar. Held in state rather than
+  left to the TitledPane so the panel survives a re-render — the jobs list changes
+  constantly while a scan runs, and its collapsed state is the user's, not the
+  node's."
+  [state open?]
+  (assoc state :jobs-open? (boolean open?)))
 
 (defn follow-log
   "Re-engage tail-following (the live log window's 'jump to bottom' button); the next

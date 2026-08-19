@@ -67,8 +67,10 @@
       (testing "the library is marked paused and re-queued behind the others"
         (is (= :paused (state/refresh-status @state-atom lib-id)))
         (is (false? (state/library-complete? @state-atom lib-id)))
-        (is (nil? (get-in @state-atom [:refresh :active])))
         (is (= [lib-id] (vec queue))))
+
+      (testing "its counters survive the pause — the status-bar row keeps showing them"
+        (is (some? (state/refresh-progress @state-atom lib-id))))
 
       (testing "the next turn resumes from the saved checkpoint"
         (with-redefs [nio/scan-roots!
@@ -83,6 +85,8 @@
         (is (= #{["found.mp3" 1]} (catalog-files conn lib-id)))
         (is (= :complete (state/refresh-status @state-atom lib-id)))
         (is (true? (state/library-complete? @state-atom lib-id)))
+        (is (nil? (state/refresh-progress @state-atom lib-id))
+            "a finished library keeps no counters — it has no status-bar row")
         (is (pos? (.length path)) "the cache was snapshotted"))
 
       (testing "the checkpoint is dropped once the walk completes"
@@ -100,8 +104,7 @@
       (with-redefs [nio/scan-roots! (fn [_roots _opts] (throw (ex-info "device gone" {})))]
         (refresh-library! refresher lib-id))
       (testing "the library is marked :error and the refresher moves on"
-        (is (= :error (state/refresh-status @state-atom lib-id)))
-        (is (nil? (get-in @state-atom [:refresh :active]))))
+        (is (= :error (state/refresh-status @state-atom lib-id))))
       (testing "the reason is recorded, so the UI can say more than 'it failed'"
         (is (= {lib-id "device gone"} (state/refresh-errors @state-atom))))
       (testing "the app-wide status is untouched — a background failure is not a

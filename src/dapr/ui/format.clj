@@ -140,39 +140,128 @@
   [libraries id]
   (or (:name (first (filter #(= (:id %) id) libraries))) "?"))
 
-(defn refresh-text
-  "One-line description of the background refresh for the sync bar: what is being
-  walked now (with its file counts), how many libraries are still queued, and
-  which ones failed — \"\" only when everything is up to date. A failure is always
-  included, since a background scan has nowhere else to report itself; its reason
-  goes in the tooltip (see refresh-error-detail)."
-  [{:keys [active status progress errors]} libraries]
-  (let [waiting  (count (filter (comp #{:pending :paused} val) status))
-        progress (cond
-                   active (let [{:keys [done total]} progress]
-                            (format "Refreshing %s…%s"
-                                    (name-list [(library-name libraries active)])
-                                    (if (and total (pos? total))
-                                      (format " %d/%d" (or done 0) total) "")))
-                   (pos? waiting) (format "Refresh queued (%d)" waiting))
-        failed   (when (seq errors)
-                   (format "Refresh failed for %s — see View ▸ Logs"
-                           (name-list (map #(library-name libraries %) (keys errors)))))]
-    (str/join " · " (remove nil? [progress failed]))))
+(defn progress-fraction
+  "Fill fraction (0.0–1.0) for a {:done :total} counter pair, or nil while the
+  total is still unknown — a walk only learns its total as it descends, so an
+  empty bar is honest until then."
+  [{:keys [done total]}]
+  (when (and total (pos? total))
+    (min 1.0 (/ (double (or done 0)) total))))
 
-(defn refresh-failed?
-  "True when any library's refresh has failed, so the sync bar can show its
-  indicator as an error rather than as ordinary progress."
-  [{:keys [errors]}]
-  (boolean (seq errors)))
+(defn- counts-text
+  "\" 30 / 120\" for a counter pair, \"\" before a total is known."
+  [{:keys [done total]}]
+  (if (and total (pos? total)) (format " %d / %d" (or done 0) total) ""))
 
-(defn refresh-error-detail
-  "Multi-line 'Library: reason' detail for the failed refreshes, for the sync bar's
-  tooltip. nil when nothing has failed."
-  [{:keys [errors]} libraries]
-  (when (seq errors)
-    (str/join "\n" (for [[id message] (sort-by key errors)]
-                     (format "%s: %s" (library-name libraries id) message)))))
+(def ^:private refresh-order
+  "Row order for the background jobs — and, in its keys, which refresh states count
+  as a job at all (:complete is absent: a library that is up to date has no work
+  outstanding). Failures come first, since they need attention and nothing else
+  will move them, then what is actually running, then what is waiting."
+  {:error 0 :scanning 1 :paused 2 :pending 3})
+
+(def ^:private refresh-labels
+  "How a job reads in a row of its own. :pending has no entry on purpose: a merely
+  queued library has nothing particular to show — no reason, no counters, no
+  progress — so it is counted rather than given a row (see tasks)."
+  {:error    "Failed"
+   :scanning "Scanning…"
+   :paused   "Paused"})
+
+(def ^:private max-refresh-rows
+  "How many background rows the status bar draws before counting the rest instead.
+  The bar is pinned to the window bottom, so an uncapped row per library would
+  squeeze the workspace above it on a large configuration."
+  4)
+
+(defn tasks
+  "Every job worth a row in the status bar, in display order: the foreground
+  operation, then a row per library the background refresher is scanning, has
+  paused or has failed on, then a single row counting whatever is merely waiting
+  for a turn — including any row past `max-refresh-rows`.
+
+  Empty when nothing is happening, so the bar disappears rather than sitting there
+  saying \"Idle\" beside a progress bar that will never fill. Only a *running* op
+  gets a foreground row; the exception is a failed one, which keeps its row (with
+  the reason) until the next op supersedes it, since a failure that reports itself
+  nowhere is a failure the user never learns about. :planned and :done need no row:
+  the plan summary and the log already say so.
+
+  Each row is {:id :label :detail :progress :running? :error?}, where :id is a
+  stable identity for the row, :label names the job, :detail says how it is going,
+  :running? distinguishes a job that is moving from one that is waiting or dead
+  (it drives the spinner in the summary), and :progress is a 0.0–1.0 fill — nil
+  when there is nothing meaningful to fill (queued, failed, or a walk that has not
+  yet learned its total), which renders as no bar at all rather than an empty one."
+  [{:keys [status progress error refresh libraries]}]
+  (let [{lib-status :status :keys [errors] lib-progress :progress} refresh
+        foreground (cond
+                     (busy? status)
+                     {:id       :foreground
+                      :label    "Status"
+                      :detail   (str (status-text status) (counts-text progress))
+                      :progress (progress-fraction progress)
+                      :running? true
+                      :error?   false}
+
+                     (= :error status)
+                     {:id     :foreground
+                      :label  "Status"
+                      :detail (or error (status-text status))
+                      :error? true})
+        jobs       (->> lib-status
+                        (filter (comp refresh-order val))
+                        (sort-by (fn [[id st]] [(refresh-order st) (library-name libraries id)])))
+        detailed   (->> jobs (filter (comp refresh-labels val)) (take max-refresh-rows))
+        row        (fn [[id st]]
+                     (let [counters (get lib-progress id)
+                           failed?  (= :error st)]
+                       {:id       [:refresh id]
+                        :label    (library-name libraries id)
+                        :detail   (if failed?
+                                    (or (get errors id) (refresh-labels st))
+                                    (str (refresh-labels st) (counts-text counters)))
+                        ;; A failed walk's counters say how far it got before it
+                        ;; died, which is not progress toward anything.
+                        :progress (when-not failed? (progress-fraction counters))
+                        :running? (= :scanning st)
+                        :error?   failed?}))
+        waiting    (- (count jobs) (count detailed))]
+    (cond-> (into (if foreground [foreground] []) (map row) detailed)
+      (pos? waiting) (conj {:id     :queued
+                            :label  "Queued"
+                            :detail (format "%d %s" waiting
+                                            (if (= 1 waiting) "library" "libraries"))}))))
+
+(defn- row-text
+  "A task row as one phrase. The foreground row's label (\"Status\") says nothing a
+  user needs, so only a library's name is worth prefixing."
+  [{:keys [id label detail]}]
+  (if (= :foreground id) detail (format "%s — %s" label detail)))
+
+(defn status-summary
+  "One-line digest of `tasks` for the main window's strip, which reports *that*
+  something is happening and leaves the per-job detail to the activity window:
+  {:text :running? :error?}, or nil when nothing is running (and the strip then
+  isn't drawn at all).
+
+  The text leads with a **failure** where there is one, otherwise with the first
+  row, and counts the rest. Leading with the failure keeps the words and the colour
+  saying the same thing: any failure reddens the whole line, and a red line reading
+  \"Syncing…\" would be a puzzle — while the sync is the row the user can already
+  see the result of, and the failed background scan is the one with nowhere else to
+  report itself.
+
+  :running? drives the spinner, and is false when every job is merely waiting or
+  already dead: a spinner over nothing but a failed scan says the app is working on
+  it, which it isn't."
+  [state]
+  (when-let [rows (seq (tasks state))]
+    (let [lead (or (first (filter :error? rows)) (first rows))]
+      {:text     (cond-> (row-text lead)
+                   (next rows) (str (format " · %d more" (dec (count rows)))))
+       :running? (boolean (some :running? rows))
+       :error?   (boolean (some :error? rows))})))
 
 (defn library-unavailable?
   "True when library `id`'s availability has been probed and came back false, so

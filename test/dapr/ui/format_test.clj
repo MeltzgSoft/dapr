@@ -141,35 +141,118 @@
     (is (= "'A' and 'B'" (fmt/name-list ["A" "B"])))
     (is (= "'A', 'B' and 'C'" (fmt/name-list ["A" "B" "C"])))))
 
-(deftest refresh-text-test
-  (let [libs [{:id 1 :name "Phone"} {:id 2 :name "NAS"}]]
-    (testing "names the library being walked, with its counts once a total is known"
-      (is (= "Refreshing 'Phone'… 30/120"
-             (fmt/refresh-text {:active 1 :progress {:done 30 :total 120}} libs)))
-      (is (= "Refreshing 'Phone'…"
-             (fmt/refresh-text {:active 1 :progress nil} libs))))
-    (testing "with nothing in flight, counts what is still waiting"
-      (is (= "Refresh queued (2)"
-             (fmt/refresh-text {:active nil :status {1 :pending 2 :paused}} libs))))
-    (testing "blank once every library is up to date"
-      (is (= "" (fmt/refresh-text {:active nil :status {1 :complete 2 :complete}} libs)))
-      (is (= "" (fmt/refresh-text {:active nil :status {}} libs))))
+(deftest progress-fraction-test
+  (testing "fills proportionally, and not past full"
+    (is (= 0.25 (fmt/progress-fraction {:done 1 :total 4})))
+    (is (= 0.0 (fmt/progress-fraction {:done 0 :total 4})))
+    (is (= 1.0 (fmt/progress-fraction {:done 9 :total 4}))))
+  (testing "nil until a total is known — a walk learns its total as it descends"
+    (is (nil? (fmt/progress-fraction {:done 3 :total 0})))
+    (is (nil? (fmt/progress-fraction {:done 3})))
+    (is (nil? (fmt/progress-fraction nil)))))
 
-    (testing "a failed refresh is always reported — it has nowhere else to surface"
-      (let [failed {:active nil :status {1 :error} :errors {1 "device gone"}}]
-        (is (= "Refresh failed for 'Phone' — see View ▸ Logs" (fmt/refresh-text failed libs)))
-        (is (true? (fmt/refresh-failed? failed)))
-        (is (= "Phone: device gone" (fmt/refresh-error-detail failed libs)))))
+(def ^:private task-libs
+  [{:id 1 :name "Phone"} {:id 2 :name "NAS"} {:id 3 :name "SD card"}])
 
-    (testing "a failure shows alongside whatever is still in flight"
-      (let [mixed {:active 2 :progress {:done 1 :total 4}
-                   :status {1 :error 2 :scanning} :errors {1 "device gone"}}]
-        (is (= "Refreshing 'NAS'… 1/4 · Refresh failed for 'Phone' — see View ▸ Logs"
-               (fmt/refresh-text mixed libs)))))
+(defn- task-lines
+  "The status bar's rows as [label detail] pairs, for terse assertions."
+  [state]
+  (mapv (juxt :label :detail) (fmt/tasks (assoc state :libraries task-libs))))
 
-    (testing "no failure, no error styling or detail"
-      (is (false? (fmt/refresh-failed? {:active 1 :status {1 :scanning}})))
-      (is (nil? (fmt/refresh-error-detail {:errors {}} libs))))))
+(deftest tasks-test
+  (testing "nothing running, no rows — the bar disappears rather than saying 'Idle'"
+    (is (= [] (task-lines {:status :idle})))
+    (is (= [] (task-lines {:status :planned})) "a ready plan is reported by its summary")
+    (is (= [] (task-lines {:status :done})) "a finished op is reported by the log")
+    (is (= [] (task-lines {:status :idle :refresh {:status {1 :complete 2 :complete}}}))
+        "a library that is up to date is not a running job"))
+
+  (testing "a running foreground op shows its counts and fills its bar"
+    (let [[row] (fmt/tasks {:status :syncing :progress {:done 3 :total 12}})]
+      (is (= "Syncing… 3 / 12" (:detail row)))
+      (is (= 0.25 (:progress row)))))
+
+  (testing "a failed foreground op keeps its row, with the reason nothing else shows"
+    (is (= [["Status" "Sync failed: device gone"]]
+           (task-lines {:status :error :error "Sync failed: device gone"})))
+    (is (true? (:error? (first (fmt/tasks {:status :error :error "boom"})))))
+    (testing "and falls back to the bare status when there is no message"
+      (is (= [["Status" "Error"]] (task-lines {:status :error})))))
+
+  (testing "a row each for what is running or stuck, most urgent first; the merely
+            queued are only counted"
+    (is (= [["Phone" "boom"]
+            ["NAS" "Scanning… 30 / 120"]
+            ["Queued" "1 library"]]
+           (task-lines {:status :idle
+                        :refresh {:status   {1 :error 2 :scanning 3 :pending}
+                                  :errors   {1 "boom"}
+                                  :progress {2 {:done 30 :total 120}}}}))))
+
+  (testing "a paused library keeps the counts it had reached"
+    (is (= [["NAS" "Paused 30 / 120"]]
+           (task-lines {:status :idle
+                        :refresh {:status {2 :paused} :progress {2 {:done 30 :total 120}}}}))))
+
+  (testing "a bar is drawn only where a fraction means something"
+    (let [progress-of (fn [state] (mapv :progress (fmt/tasks (assoc state :libraries task-libs))))]
+      (is (= [nil] (progress-of {:refresh {:status {2 :scanning} :progress {2 {:done 7 :total 0}}}}))
+          "a walk that has not yet listed anything has no total to fill toward")
+      (is (= [nil] (progress-of {:refresh {:status {1 :error} :progress {1 {:done 7 :total 9}}}}))
+          "how far a failed walk got is not progress toward anything")
+      (is (= [nil] (progress-of {:refresh {:status {1 :pending}}})) "nor is waiting")))
+
+  (testing "a failure carries its reason, and is flagged for the UI to colour"
+    (let [[row] (fmt/tasks {:status  :idle
+                            :libraries task-libs
+                            :refresh {:status {1 :error} :errors {1 "device gone"}}})]
+      (is (= "device gone" (:detail row)))
+      (is (true? (:error? row)))))
+
+  (testing "a queue of libraries is one row, however long it is"
+    (is (= [["Queued" "8 libraries"]]
+           (task-lines {:status :idle :refresh {:status (zipmap (range 1 9) (repeat :pending))}}))))
+
+  (testing "rows past the cap are counted too, so the bar can't eat the window"
+    (let [rows (fmt/tasks {:status    :idle
+                           :libraries task-libs
+                           :refresh   {:status (zipmap (range 1 9) (repeat :paused))}})]
+      (is (= 5 (count rows)) "four libraries and the count")
+      (is (= "4 libraries" (:detail (last rows))))))
+
+  (testing "rows have stable identities, so cljfx can diff them"
+    (is (= [:foreground [:refresh 2] :queued]
+           (mapv :id (fmt/tasks {:status :syncing :libraries task-libs
+                                 :refresh {:status {2 :scanning 3 :pending}}}))))))
+
+(deftest status-summary-test
+  (let [summary (fn [state] (fmt/status-summary (assoc state :libraries task-libs)))]
+    (testing "nothing running, no summary — the strip isn't drawn"
+      (is (nil? (summary {:status :idle})))
+      (is (nil? (summary {:status :done :refresh {:status {1 :complete}}}))))
+
+    (testing "one job speaks for itself"
+      (is (= {:text "Syncing… 3 / 12" :running? true :error? false}
+             (summary {:status :syncing :progress {:done 3 :total 12}})))
+      (is (= {:text "NAS — Scanning… 30 / 120" :running? true :error? false}
+             (summary {:refresh {:status {2 :scanning} :progress {2 {:done 30 :total 120}}}}))))
+
+    (testing "the rest are counted, leading with the same row the sidebar leads with"
+      (is (= "Phone — boom · 2 more"
+             (:text (summary {:status  :syncing
+                              :refresh {:status {1 :error 2 :scanning} :errors {1 "boom"}}})))))
+
+    (testing "the spinner turns only while something is actually moving"
+      (is (false? (:running? (summary {:refresh {:status {1 :error} :errors {1 "boom"}}})))
+          "a failed scan is not work in progress")
+      (is (false? (:running? (summary {:refresh {:status {1 :pending 2 :paused}}})))
+          "nor is a queue nobody is serving")
+      (is (true? (:running? (summary {:refresh {:status {1 :pending 2 :scanning}}})))))
+
+    (testing "a failure anywhere colours the summary, even behind a running job"
+      (is (true? (:error? (summary {:status  :syncing
+                                    :refresh {:status {1 :error} :errors {1 "boom"}}}))))
+      (is (false? (:error? (summary {:status :syncing})))))))
 
 (deftest library-unavailable?-test
   (testing "true only when probed and explicitly unavailable"

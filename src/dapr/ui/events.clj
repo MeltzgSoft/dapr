@@ -245,6 +245,13 @@
   [pos]
   (some-> @state-atom* (swap! state/log-scrolled pos)))
 
+(defn on-jobs-expanded!
+  "Feed the jobs sidebar's expanded state back into app state when the user clicks
+  its header — cljfx's titled-pane can set :expanded but cannot report it changing
+  (see dapr.ui.views). A no-op before wiring."
+  [open?]
+  (some-> @state-atom* (swap! state/set-jobs-open open?)))
+
 (def ^:private facet-single-click-millis
   "Delay before a single facet click applies its filter — long enough for a second
   click to arrive and be treated as a double-click (which toggles without filtering),
@@ -416,7 +423,7 @@
                           (future (run-sync! state-atom cache)))
       ::confirm-cancel (swap! state-atom state/close-confirm)
 
-      ;; logging — the live log window + its log-dir picker
+      ;; logging — the activity window (jobs + live log) and its log-dir picker
       ::view-logs      (swap! state-atom state/open-log)
       ::log-close      (swap! state-atom state/close-log)
       ::log-follow     (swap! state-atom state/follow-log)

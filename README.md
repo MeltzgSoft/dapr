@@ -37,9 +37,14 @@ a live device.
 Libraries are scanned by a **background refresher**, never by the UI: picking a
 source or sink (or saving an edited library) paints its tracks from the cache
 immediately (however large the library) and starts a fresh scan of it at the
-front of the queue, with progress — and any failure, with its reason — shown in
-the sync bar. **Only the libraries you have chosen are ever scanned** — nothing
-goes looking for a player you haven't plugged in. A scan **yields its device** the moment a sync needs it,
+front of the queue. **Only the libraries you have chosen are ever scanned** —
+nothing goes looking for a player you haven't plugged in. A **one-line summary
+along the window bottom** spins while
+anything is in flight and says what it is; clicking it opens the **activity
+window**, whose collapsible **Jobs** sidebar lists a row per running job — the
+current sync or preview, plus every library being scanned, paused or failed (with
+its reason), and a count of those still queued — beside the live log. With nothing
+running there is no summary at all. A scan **yields its device** the moment a sync needs it,
 then resumes where it left off, so a transfer never waits behind one. A refresh
 that hasn't finished leaves the cached track list a possibly-stale *superset* of
 what is on the device, so syncing before it completes asks for confirmation
@@ -51,7 +56,8 @@ artist, album, genre. Tags come from the file's **own embedded metadata** where
 the backend supports reading it (`file://` via jaudiotagger, `mtp://` via the
 device index or a ranged header read — see [`docs/mtp-tags.md`](docs/mtp-tags.md)),
 falling back to path-derived values otherwise. A **dark/light/system theme** and
-an on-demand **live log window** round out the UI.
+the on-demand **activity window** (running jobs beside the live log) round out
+the UI.
 
 Key behaviours (current defaults):
 

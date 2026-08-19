@@ -68,8 +68,8 @@
   :listing events grow the total by a directory's child count (so the total climbs
   as the walk descends) and :entry events advance done toward it; both survive a
   pause, because `prog` is check-pointed alongside the walk."
-  [state-atom label prog]
-  (let [publish! (fn [p] (swap! state-atom state/set-refresh-progress
+  [state-atom lib-id label prog]
+  (let [publish! (fn [p] (swap! state-atom state/set-refresh-progress lib-id
                                 (select-keys p [:done :total])))]
     (fn [{:keys [type rel track] children :count}]
       (case type
@@ -97,13 +97,12 @@
       (fn []
         (swap! state-atom (fn [s] (-> s
                                       (state/set-refresh-status lib-id :scanning)
-                                      (state/set-refresh-active lib-id)
-                                      (state/set-refresh-progress (select-keys @prog [:done :total])))))
+                                      (state/set-refresh-progress lib-id (select-keys @prog [:done :total])))))
         (nio/scan-roots!
          (:roots library)
          {:known      (fn [rel size] (get by-file [rel size]))
           :checkpoint (:checkpoint saved)
-          :on-scan    (scan-callback state-atom (:name library) prog)
+          :on-scan    (scan-callback state-atom lib-id (:name library) prog)
           :on-batch   (fn [tracks] (cache/upsert-library-tracks! conn lib-id tracks known-cat))
           ;; Yield the device to any foreground op — and stop promptly on halt.
           :pause?     (fn [] (or (not @running?) (coord/queued? dev)))})))))
@@ -111,7 +110,8 @@
 (defn- finish-scan!
   "Apply a completed walk: retract the presences it did not find, persist the
   cache, and mark the library :complete (so a sync against it needs no
-  confirmation)."
+  confirmation). Its counters go with the checkpoint — a complete library has no
+  row in the status bar, and a later re-queue starts its own count."
   [{:keys [state-atom cache checkpoints]} lib-id library {:keys [seen]}]
   (let [{:keys [conn path]} cache]
     (cache/reconcile-library-tracks! conn lib-id seen)
@@ -119,17 +119,17 @@
     (swap! checkpoints dissoc lib-id)
     (swap! state-atom (fn [s] (-> s
                                   (state/set-refresh-status lib-id :complete)
-                                  (state/set-refresh-active nil))))
+                                  (state/set-refresh-progress lib-id nil))))
     (t/log! (format "Refreshed '%s' — %d tracks." (:name library) (count seen)))))
 
 (defn- pause-scan!
   "Save a paused walk's checkpoint (and its progress counters) so the next turn
-  resumes from the frontier rather than re-listing the tree."
+  resumes from the frontier rather than re-listing the tree. The published
+  counters stay put, so the library's status-bar row keeps showing how far it got
+  while it waits for another turn."
   [{:keys [state-atom checkpoints]} lib-id library {:keys [checkpoint]} prog]
   (swap! checkpoints assoc lib-id {:checkpoint checkpoint :progress @prog})
-  (swap! state-atom (fn [s] (-> s
-                                (state/set-refresh-status lib-id :paused)
-                                (state/set-refresh-active nil))))
+  (swap! state-atom state/set-refresh-status lib-id :paused)
   (t/log! :debug (format "  [%s] paused — device wanted elsewhere." (:name library))))
 
 ;; --- queue -------------------------------------------------------------------
@@ -206,9 +206,7 @@
             ;; starts this library clean rather than resuming into the wreckage.
             (swap! checkpoints dissoc lib-id)
             (let [summary (log/error-summary t)]
-              (swap! state-atom (fn [s] (-> s
-                                            (state/set-refresh-error lib-id summary)
-                                            (state/set-refresh-active nil))))
+              (swap! state-atom state/set-refresh-error lib-id summary)
               (t/log! {:level :error :error t
                        :msg   (format "Refresh of '%s' failed: %s" (:name library) summary)}))))
         (repaint! refresher lib-id)))))

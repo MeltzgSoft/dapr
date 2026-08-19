@@ -35,6 +35,10 @@ historical — that stack has long since landed on `main`.
 with foreground device priority) is **built** on `feat/background-refresh` (§10):
 all 8 phases, unit + integration green, pending a manual smoke on real hardware.
 
+**Feature 11 — `feat/parallel-refresh`** (scan independent devices at once) is
+**sketched** in §11 and deliberately not started: it should follow feature 10's
+hardware smoke, since it changes the same device-arbitration primitives.
+
 ---
 
 ## Decisions locked in
@@ -484,8 +488,9 @@ source/sink not `:complete` this session.
   and `:dapr/refresher` components (refresher deps state+cache+coordinator; threaded
   into `make-handler`). Refresher **halts before `:dapr/devices`** closes sessions.
 - **UI** `src/dapr/ui/views.clj`: confirmation modal (Confirm→`::sync-confirm`,
-  Cancel→`::sync-cancel`) mirroring the settings modal; optional per-library refresh
-  indicator reading `:refresh`.
+  Cancel→`::sync-cancel`) mirroring the settings modal; a per-job sidebar in the
+  activity window (`fmt/tasks`) with a clickable one-line summary, spinner and all,
+  pinned to the main window (`fmt/status-summary`).
 
 **Phases** (each isolated / testable):
 - [x] 1. Coordinator (`dapr.device.coordinator`) + `coordinator_test`.
@@ -494,7 +499,7 @@ source/sink not `:complete` this session.
 - [x] 4. Refresher engine (`dapr.refresh`).
 - [x] 5. Integrant wiring (`system.clj`/`config.edn`, halt ordering).
 - [x] 6. Events rewire (paint-from-cache + enqueue; cache-only preview; `with-devices!`).
-- [x] 7. Confirmation gate + modal view + refresh indicator.
+- [x] 7. Confirmation gate + modal view + per-job status bar.
 - [x] 8. Cleanup: retire the old `reload-catalogs!` scan path.
 
 **Deltas from the design** (all deliberate, decided while building):
@@ -537,12 +542,78 @@ source/sink not `:complete` this session.
   - Re-queueing includes a library that already completed this session: the device
     may have changed since, and picking a library is exactly when the user wants its
     list to be right. Only a library being walked *right now* is left alone.
-- **A failed refresh surfaces in the sync bar**, red, with the reason per library
-  in its tooltip (`state/set-refresh-error` + `fmt/refresh-failed?` /
-  `refresh-error-detail`) — a background scan has no other way to reach the user.
-  It stays out of the app-wide `:error`/`:status`, which belong to the foreground
-  op: a scan that failed must not blank a computed plan. The message clears as
-  soon as that library is re-queued.
+- **Progress is reported per job, and the workspace only carries a summary of it.**
+  `fmt/tasks` projects state into `{:id :label :detail :progress :running? :error?}`
+  rows: the running foreground op, then a row per library being scanned, paused or
+  failed, then one row *counting* the merely queued — a queued library has no
+  reason, counters or progress to show, and eight identical empty bars at launch is
+  noise. The detailed rows cap at four. This replaced a bottom bar that only ever
+  read the *foreground* `:status`/`:progress`, so once the scan path moved to the
+  background refresher it sat on "Idle" with an empty bar through an entire refresh.
+  - **The rows live in the activity window** (`log-window`, renamed from the log
+    window) as a left sidebar beside the live log — the two answer the same
+    question, one in the present tense and one in the past. It is opened by
+    View ▸ Activity & Logs… or by clicking the summary. An empty sidebar says
+    "Nothing running": a panel opened deliberately to ask what the app is doing
+    must answer, where the always-visible strip should just get out of the way.
+    - **Collapsible** (a `:titled-pane` carrying the job count in its title, so a
+      closed panel still says how many). A collapsed TitledPane still reports its
+      content's width, which would hold the sidebar open behind a closed panel, so
+      the *pane* is clamped to `collapsed-width` instead (302 px → 165 px). The
+      obvious alternative — dropping `:content` while collapsed — is a **trap**:
+      `TitledPaneSkin`'s collapse animation captures the content node and calls
+      `.setVisible` on it when the transition ends, so removing it mid-collapse
+      throws an NPE on the JavaFX pulse, kills the transition, and the body never
+      lays out again on re-expand. That shipped for one round and had to be
+      reverted; the reproduction is a real shown window driven by `.setExpanded`,
+      since neither a one-shot build nor a state-driven re-render animates.
+      Expanded state lives in `:jobs-open?`, not in the node,
+      since the rows re-render constantly while a scan runs; the user's click comes
+      back through a raw property listener (`ensure-jobs-expanded-listener!` →
+      `events/on-jobs-expanded!`), because cljfx's titled-pane can *set* `:expanded`
+      but has no change callback — the same arrangement the log scrollbar already
+      uses.
+    - Each row is a **grid** cell pair: the name in a column of its own, the bar
+      over the status text in the second. The name column is content-sized, which
+      takes `:min-width :use-pref-size` — without a min of its own it is the column
+      with slack, so GridPane ellipsises the *names* to keep the bars at their
+      preferred width. Pinned to its content it takes what the longest name needs
+      (26 px for "NAS", 181 px for a long one) and the bar column absorbs or yields
+      the slack down to 90 px: text has to be read, a bar only has to be seen.
+  - **The main window keeps a one-line summary** (`fmt/status-summary`): an
+    indeterminate `:progress-indicator` (a spinner) while anything is actually
+    moving, the leading job's text, and a count of the rest. It leads with a
+    *failure* where there is one, so the words and the red match — a red line
+    reading "Syncing…" is a puzzle, and the sync is the job whose result the user
+    can already see. The spinner is suppressed when every job is queued, paused or
+    dead: spinning over a failed scan claims the app is working on it.
+  - **A job that isn't running gets no row, and no rows means no strip.** An idle
+    app shows nothing rather than "Idle" beside a bar that will never fill;
+    `:planned` and `:done` are already reported by the plan summary and the log.
+    Likewise a bar is drawn only where a fraction means something — a queued
+    library, a failed walk, or a walk that has not yet learned its total leaves that
+    column blank instead of showing an empty bar, which reads as stalled.
+  - The exception is a **failed** foreground op, which keeps its row until the next
+    op supersedes it — and now shows `(:error state)`, the reason, which until this
+    change was recorded by `state/set-error` and then rendered nowhere at all: the
+    bar showed the bare word "Error".
+  - Two cljfx constraints, both found by the headless render check and worth
+    knowing: a prop value of **nil is not "absent"** (there is no Lifecycle for nil,
+    so `main-stage` omits `:bottom` via `cond->` rather than setting it), and
+    **`:tooltip` is a Control prop** — an HBox is a plain Region, so the summary's
+    tooltip lives on its labels.
+  - Consequently `:refresh :progress` is **keyed by library** (and `:refresh
+    :active` is gone — it was `(= :scanning …)` in the per-library status, a
+    second source of truth for the same fact). A paused library keeps the counters
+    it reached, which is honest: it resumes from exactly there.
+  - **A failed refresh surfaces as a red row** with its reason as the detail (and
+    a tooltip, since the column truncates), replacing the sync bar's summary
+    line — a background scan has no other way to reach the user, and the pinned
+    strip is a better place for it than a label that duplicated the same
+    information beside the pickers. It stays out of the app-wide
+    `:error`/`:status`, which belong to the foreground op: a scan that failed must
+    not blank a computed plan. The message clears as soon as that library is
+    re-queued.
 - **`cache/track-sources` is now scoped to the keys being written** rather than the
   whole track table, since an incremental refresh asks once per batch.
 - **The whole-catalog scan path is gone**, not just unused: `nio/catalog!` (+ its
@@ -570,17 +641,20 @@ reconcile retracts only what's gone and transacts nothing when unchanged; downgr
 protection holds per batch); `refresh_test` (checkpoint saved + re-queued on pause,
 resumed from it, reconcile+snapshot+`:complete` on finish, error recorded, deleted
 library dropped, queue priorities); `state_test` (`update-catalogs` keeps the
-selection; refresh projection; sync gate; confirm); `format_test`
-(`arbitrate-access?`, `name-list`, `refresh-text`); `refresh_integration_test`
+selection; per-library refresh projection; sync gate; confirm); `format_test`
+(`arbitrate-access?`, `name-list`, `progress-fraction`, `tasks` — no rows when
+nothing runs, row order, the collapsed queue, the row cap, error rows, and where a
+bar is drawn at all — and `status-summary`: what leads, what is counted, when the
+spinner turns); `refresh_integration_test`
 (real temp dirs end to end: walk → cache → snapshot, deletion retracted, new file
-picked up, worker stops clean). `clojure -M:test` (114) + `-M:integration` (23)
+picked up, worker stops clean). `clojure -M:test` (117) + `-M:integration` (23)
 green; clj-kondo + cljfmt clean; views render-checked headlessly.
 
 ⏳ **Still wants a manual smoke** (`clojure -M:run`, real hardware): a large MTP/SMB
-library paints instantly from cache while the refresh indicator advances; choosing a
-source/sink is instant; a sync mid-refresh pauses/releases the device, runs, then the
-refresh resumes where it left off; the confirm dialog appears only while source/sink
-refresh is unfinished.
+library paints instantly from cache while its status-bar row advances; choosing a
+source/sink is instant; a sync mid-refresh pauses/releases the device (its row goes
+"Paused" holding its counts, the Status row runs), then the refresh resumes where it
+left off; the confirm dialog appears only while source/sink refresh is unfinished.
 
 **Files.** New: `src/dapr/device/coordinator.clj`, `src/dapr/refresh.clj`,
 `src/dapr/library/catalogs.clj`, `test/dapr/device/coordinator_test.clj`,
@@ -589,6 +663,73 @@ Changed: `fs/nio.clj`, `db/cache.clj`, `state.clj`, `ui/events.clj`, `ui/views.c
 `ui/format.clj`, `system.clj`, `resources/config.edn`, `device/format.clj` +
 `device/{file,mtp,smb}/format.clj` (the `arbitrate-access?` methods); extended
 `nio_test`, `cache_test`, `state_test`, `format_test` (ui + device).
+
+---
+
+## 11. `feat/parallel-refresh` — scan independent devices at once
+**📋 SKETCHED, not started.** Do it *after* feature 10's hardware smoke: landing
+concurrency on a refresher that has never run against real MTP hardware means
+debugging two unknowns at once.
+
+**Why.** The refresher is one daemon thread taking one library at a time
+(`refresh/run-loop!`), so a user with a DAP and a NAS waits for both slow scans
+back to back even though the devices are unrelated. Nothing about the design
+requires that: the coordinator already arbitrates *per device key*, and the UI is
+already per-library (feature 10's status bar draws a row per job, and
+`:refresh :progress` is keyed by library), so several rows advancing at once needs
+no further UI work.
+
+**The blocker, and the primitive that fixes it.** `coord/queued?` is
+`ReentrantLock.hasQueuedThreads` — true when *anyone* waits. It is the walk's
+signal to check-point and release. Two refresher threads on one device would
+therefore preempt *each other*: B blocks, A check-points and releases, B acquires
+and immediately sees A re-queued, so B check-points too — a ping-pong of
+check-points a directory at a time, strictly worse than serial. The same false
+positive already bites `refresh/repaint!`, which takes the *sink's* lock for its
+free-space query and so looks like a foreground op to any worker holding it.
+
+So `queued?` must mean "a **foreground** op is waiting", not "someone is waiting":
+a per-key count of foreground waiters, incremented before `.lock` and decremented
+once acquired, with the background path (a new `with-device-background!`, or a
+flag) not counted. Background/background contention then degrades to ordinary
+blocking, which is correct.
+
+**Design summary.**
+- **Coordinator**: foreground-waiter counts as above; `queued?` reads them.
+- **Refresher**: a small pool instead of one thread, plus a **lease set of in-flight
+  coordinated device keys** — a worker skips (rotates past) a library whose device
+  another worker is already walking, rather than parking a pool thread on its lock.
+  Devices that answer `arbitrate-access?` **false** (`:file`) need no lease, so
+  local libraries can run as wide as the pool. `stop!` joins every worker.
+- **Cache writes**: `upsert-library-tracks!` is read-modify-write (read
+  `library-catalog` + `track-sources`, diff, transact) over track entities that are
+  **shared across libraries**. Two libraries holding the same file can interleave
+  and defeat the embedded→path downgrade guard, leaving good tags overwritten with
+  path-derived ones until the next full scan. `d/transact!` is atomic, so nothing
+  corrupts — but the diff must become atomic with its transaction: serialize cache
+  *writes* through one lock (they are in-memory and fast next to a device walk, so
+  contention is irrelevant). Note this interleave is *already possible* between the
+  refresher and `sync/apply-plan-to-cache!`; parallelism only widens the window.
+- **Repaint**: with the foreground-aware `queued?` a worker's `library-free!` no
+  longer looks like a preemption; concurrent `paint!` calls are last-swap-wins over
+  consistent cache reads, which is fine.
+
+**Phases.** 1. Foreground-aware `queued?` (+ `coordinator_test` for two background
+holders not thrashing). 2. Serialized cache writes. 3. Worker pool + device leases.
+4. `stop!` over the pool. 5. Smoke: two slow devices scanning at once, a sync still
+preempting both.
+
+**Open questions.** Pool size (one thread per distinct device key, or a fixed small
+pool?); whether the sync gate should wait for *all* in-flight refreshes rather than
+just source and sink. Note the payoff shrank once the refresher stopped queueing
+every library: the queue now holds a source and a sink, so parallelism buys the
+overlap of exactly those two — worth it when they are both slow and on different
+devices (a DAP and a NAS), which is the common sync, but no longer a launch-time
+stampede to untangle.
+
+**Prerequisite already split out:** the concurrent-snapshot fix this work would
+otherwise have had to make first ships as its own change (`fix(cache): give each
+snapshot write its own temp file`).
 
 ---
 

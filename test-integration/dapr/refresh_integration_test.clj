@@ -53,7 +53,7 @@
             (is (= #{["a.mp3" 3] ["Album/b.flac" 4]} (catalog-files conn lib-id))
                 "audio files only, keyed by [rel size]")
             (is (true? (state/library-complete? @state-atom lib-id)))
-            (is (nil? (get-in @state-atom [:refresh :active]))))
+            (is (nil? (state/refresh-progress @state-atom lib-id))))
 
           (testing "the completed scan is persisted, so the next launch paints from it"
             (is (= (catalog-files conn lib-id)

@@ -307,7 +307,15 @@
                                  (assoc :log-follow? false)
                                  state/open-log)))))
   (testing "set-log-file records the active log path"
-    (is (= "/tmp/dapr.0.log" (:log-file (state/set-log-file state/initial-state "/tmp/dapr.0.log"))))))
+    (is (= "/tmp/dapr.0.log" (:log-file (state/set-log-file state/initial-state "/tmp/dapr.0.log")))))
+  (testing "the jobs sidebar starts expanded and remembers being collapsed"
+    (is (true? (:jobs-open? state/initial-state)))
+    (is (false? (:jobs-open? (state/set-jobs-open state/initial-state false))))
+    (is (true? (:jobs-open? (-> state/initial-state
+                                (state/set-jobs-open false)
+                                (state/set-jobs-open true)))))
+    (testing "coercing whatever the property listener hands over"
+      (is (false? (:jobs-open? (state/set-jobs-open state/initial-state nil)))))))
 
 (deftest log-follow-test
   (let [following (assoc state/initial-state :log-follow? true :log-scroll 1.0)]
@@ -361,22 +369,25 @@
               (state/set-libraries [lib-a lib-b])
               (assoc :source-id "a" :sink-id "b")
               (state/set-refresh-status "a" :scanning)
-              (state/set-refresh-active "a")
-              (state/set-refresh-progress {:done 3 :total 9}))]
+              (state/set-refresh-progress "a" {:done 3 :total 9}))]
     (testing "status and progress are projected per library"
       (is (= :scanning (state/refresh-status s "a")))
       (is (nil? (state/refresh-status s "b")))
-      (is (= "a" (get-in s [:refresh :active])))
-      (is (= {:done 3 :total 9} (get-in s [:refresh :progress]))))
+      (is (= {:done 3 :total 9} (state/refresh-progress s "a")))
+      (is (nil? (state/refresh-progress s "b"))))
 
     (testing "only a completed walk counts as complete"
       (is (false? (state/library-complete? s "a")))
       (is (true? (state/library-complete? (state/set-refresh-status s "a" :complete) "a"))))
 
-    (testing "handing over to another library clears the previous progress"
-      (let [s2 (state/set-refresh-active s "b")]
-        (is (= "b" (get-in s2 [:refresh :active])))
-        (is (nil? (get-in s2 [:refresh :progress])))))
+    (testing "a second library's progress is tracked beside the first, not instead"
+      (let [s2 (state/set-refresh-progress s "b" {:done 1 :total 4})]
+        (is (= {:done 3 :total 9} (state/refresh-progress s2 "a")))
+        (is (= {:done 1 :total 4} (state/refresh-progress s2 "b"))))
+      (testing "and nil clears just that library's"
+        (let [s2 (state/set-refresh-progress s "a" nil)]
+          (is (nil? (state/refresh-progress s2 "a")))
+          (is (= :scanning (state/refresh-status s2 "a"))))))
 
     (testing "the sync gate lists the chosen libraries that haven't completed"
       (is (= ["A" "B"] (mapv :name (state/sync-incomplete-libraries s))))
@@ -387,10 +398,10 @@
       (testing "a source and sink on one library is listed once"
         (is (= 1 (count (state/sync-incomplete-libraries (assoc s :sink-id "a")))))))
 
-    (testing "a deleted library is forgotten, including as the active scan"
+    (testing "a deleted library is forgotten, progress and all"
       (let [s2 (state/forget-refresh s "a")]
         (is (nil? (state/refresh-status s2 "a")))
-        (is (nil? (get-in s2 [:refresh :active])))))))
+        (is (nil? (state/refresh-progress s2 "a")))))))
 
 (deftest refresh-error-test
   (let [failed (-> state/initial-state

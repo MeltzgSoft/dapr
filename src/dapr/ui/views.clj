@@ -20,7 +20,7 @@
            (javafx.collections ListChangeListener)
            (javafx.geometry Orientation)
            (javafx.scene Parent)
-           (javafx.scene.control ListView ScrollBar)
+           (javafx.scene.control ListView ScrollBar TitledPane)
            (javafx.stage Screen)))
 
 ;; --- library manager ---------------------------------------------------------
@@ -115,10 +115,11 @@
                                 (assoc :disable true :style "-fx-text-fill: gray;")))}})
 
 (defn- sync-bar
-  "Source/sink pickers, the ↻ Refresh action, and a live indicator of the
-  background refresh (see dapr.refresh) — the scanning that used to freeze this bar
-  now runs behind it, so the indicator is the only sign of it."
-  [libraries source-id sink-id availability refresh]
+  "Source/sink pickers and the ↻ Refresh action. The background refresh (see
+  dapr.refresh) — the scanning that used to freeze this bar, and now runs behind
+  it — reports itself in the status bar along the window bottom, a row per
+  library, rather than as a summary line here."
+  [libraries source-id sink-id availability]
   (let [name-of     (fn [id] (:name (first (filter #(= (:id %) id) libraries))))
         unavailable (into #{} (comp (filter #(fmt/library-unavailable? availability (:id %)))
                                     (map :name))
@@ -131,18 +132,7 @@
                 {:fx/type :button :text "↻ Refresh"
                  :tooltip {:fx/type :tooltip
                            :text "Re-check which devices are reachable and re-scan the chosen source and sink"}
-                 :on-action {:event/type ::events/refresh-availability}}
-                (cond-> {:fx/type     :label
-                         :h-box/hgrow :always
-                         :text        (fmt/refresh-text refresh libraries)
-                         :style       (if (fmt/refresh-failed? refresh)
-                                        "-fx-text-fill: red;"
-                                        "-fx-text-fill: gray;")}
-                  ;; Why it failed, per library — the sync bar only has room to say
-                  ;; that it did.
-                  (fmt/refresh-failed? refresh)
-                  (assoc :tooltip {:fx/type :tooltip
-                                   :text    (fmt/refresh-error-detail refresh libraries)}))]}))
+                 :on-action {:event/type ::events/refresh-availability}}]}))
 
 (defn- capacity-bar
   "Capacity meter for the sink library `sink-name` (how full it would be after the
@@ -321,25 +311,138 @@
                           (track-column "Size" :size 90 #(when (some? %) (fmt/human-bytes %)))
                           (track-column "On sink" :sink-rel 160 identity)]})
 
-(defn- progress-bar [progress]
-  {:fx/type    :progress-bar
-   :max-width  Double/MAX_VALUE
-   :min-height 18
-   :progress   (if (and progress (pos? (:total progress)))
-                 (/ (double (:done progress)) (:total progress))
-                 0.0)})
+(defn- task-row
+  "One job as a pair of grid cells on row `i`: its name in the first column, and in
+  the second its progress bar over its status text. The bar is omitted (rather than
+  drawn empty, which reads as stalled) when there is no meaningful fraction —
+  queued, failed, or still counting — leaving those jobs a single line of text.
 
-(defn- status-bar
-  "An always-visible strip pinned to the window bottom holding the status text and
-  scan/sync progress bar, so they can never be clipped by the resizable split
-  above them."
-  [progress status]
-  {:fx/type   :h-box
-   :padding   8
-   :spacing   8
-   :alignment :center-left
-   :children  [{:fx/type :label :text (str "Status: " (fmt/status-text status))}
-               (assoc (progress-bar progress) :h-box/hgrow :always)]})
+  The name goes in a column of its own so the names line up, and the grid sizes
+  that column to the longest of them: a fixed width either wastes the panel on
+  short names or clips long ones. A failed row is red and keeps its reason in a
+  tooltip as well, for when wrapping still isn't enough."
+  [i {:keys [label detail progress error?]}]
+  [{:fx/type              :label
+    :text                 label
+    :grid-pane/row        i
+    :grid-pane/column     0
+    :grid-pane/valignment :top}
+   {:fx/type          :v-box
+    :grid-pane/row    i
+    :grid-pane/column 1
+    :spacing          2
+    :children
+    (cond-> []
+      progress (conj {:fx/type    :progress-bar
+                      :max-width  Double/MAX_VALUE
+                      :min-height 14
+                      :progress   progress})
+      :always  (conj (cond-> {:fx/type   :label
+                              :text      detail
+                              :wrap-text true
+                              :style     (if error? "-fx-text-fill: red;" "")}
+                       error? (assoc :tooltip {:fx/type :tooltip :text detail}))))}])
+
+(defn- job-list
+  "The per-job rows (see fmt/tasks) as a two-column grid: names sized to their
+  content, everything else taking the remaining width. Says plainly when there is
+  nothing running — this panel is opened deliberately to answer \"what is it
+  doing?\", so an empty one must answer rather than leave a blank gap."
+  [rows]
+  {:fx/type            :grid-pane
+   :hgap               8
+   :vgap               8
+   :padding            8
+   :pref-width         300
+   :max-width          420
+   ;; Names take exactly the width they need and no more; the bar column absorbs
+   ;; the slack, and gives it back (down to :min-width) when a long name needs the
+   ;; room — text has to be read, where a progress bar only has to be seen.
+   ;; :use-pref-size is what makes the name column *content*-sized: without a min
+   ;; width of its own it is the column with slack, so GridPane shrinks it — and
+   ;; ellipsises the names — to keep the progress bars at their preferred width.
+   ;; Pinned to its content it takes exactly what the longest name needs, and the
+   ;; bar column absorbs the slack or yields it back (down to :min-width): text has
+   ;; to be read, where a progress bar only has to be seen.
+   :column-constraints [{:fx/type :column-constraints :hgrow :never
+                         :min-width :use-pref-size}
+                        {:fx/type :column-constraints :hgrow :always :fill-width true
+                         :min-width 90}]
+   :children           (if (seq rows)
+                         (into [] (comp (map-indexed task-row) cat) rows)
+                         [{:fx/type          :label
+                           :text             "Nothing running."
+                           :style            "-fx-text-fill: gray;"
+                           :grid-pane/row    0
+                           :grid-pane/column 0}])})
+
+(def ^:private collapsed-width
+  "Width the jobs panel is clamped to while collapsed — its header and no more.
+  Comfortably fits \"Jobs (99)\" plus the disclosure arrow; a longer title would
+  ellipsise, which is self-evident rather than misleading."
+  150)
+
+(defn- jobs-panel
+  "The activity window's jobs sidebar, collapsible so the log can have the whole
+  window when the jobs aren't what you came to read. Expanded state lives in app
+  state (see state/set-jobs-open), not in the TitledPane: the rows re-render
+  constantly while a scan runs, and collapsing is the user's decision to keep. The
+  count stays in the title, which is all that's left of the panel when collapsed."
+  [{:keys [jobs-open?] :as state}]
+  (let [rows (fmt/tasks state)]
+    (cond-> {:fx/type     :titled-pane
+             :text        (if (seq rows) (format "Jobs (%d)" (count rows)) "Jobs")
+             :collapsible true
+             ;; The user's click is read back by a raw listener, not a prop: cljfx's
+             ;; titled-pane exposes :expanded as a setter only, with no change
+             ;; callback (see ensure-jobs-expanded-listener!, same arrangement as
+             ;; the log scrollbar).
+             :expanded    (boolean jobs-open?)
+             ;; The content stays put when collapsed. Dropping it (to stop a closed
+             ;; panel reserving its content's width) breaks the pane permanently:
+             ;; TitledPaneSkin's collapse animation captures the content node and
+             ;; calls .setVisible on it when the transition ends, so removing it
+             ;; mid-collapse NPEs on the JavaFX pulse, kills the transition, and the
+             ;; body never lays out again on re-expand.
+             :content     (job-list rows)}
+      ;; So the width is handed back by clamping the *pane* instead — a collapsed
+      ;; TitledPane is only a title bar, and this is what stops it holding the
+      ;; sidebar's full width open behind one.
+      (not jobs-open?) (assoc :max-width collapsed-width))))
+
+(def ^:private activity-hint
+  "Tooltip for the status summary. Lives on its labels rather than on the strip
+  itself: :tooltip is a Control prop, and an HBox is a plain Region."
+  {:fx/type :tooltip
+   :text    "Open the activity window for every job and the live log"})
+
+(defn- status-summary
+  "Strip pinned to the main window's bottom: a spinner while work is in flight and
+  a one-line digest of it (see fmt/status-summary), the whole strip clicking
+  through to the activity window for the per-job detail. nil when nothing is
+  running, so an idle app shows no strip at all."
+  [state]
+  (when-let [{:keys [text running? error?]} (fmt/status-summary state)]
+    {:fx/type   :h-box
+     :padding   8
+     :spacing   8
+     :alignment :center-left
+     :cursor    :hand
+     :on-mouse-clicked {:event/type ::events/view-logs}
+     :children  (cond-> []
+                  running? (conj {:fx/type    :progress-indicator
+                                  :progress   -1.0        ; indeterminate: spins
+                                  :max-width  16
+                                  :max-height 16})
+                  :always  (conj {:fx/type :label
+                                  :text    text
+                                  :tooltip activity-hint
+                                  :style   (if error? "-fx-text-fill: red;" "")}
+                                 {:fx/type :region :h-box/hgrow :always}
+                                 {:fx/type :label
+                                  :text    "Details ▸"
+                                  :tooltip activity-hint
+                                  :style   "-fx-text-fill: gray; -fx-underline: true;"}))}))
 
 (defn- controls-row [state]
   {:fx/type   :h-box
@@ -356,14 +459,14 @@
   "Top section of the workspace: the source/sink pickers, capacity meter, the
   track picker (which grows to fill the section), the action buttons and the plan
   summary."
-  [{:keys [libraries source-id sink-id capacity plan library-availability refresh] :as state}]
+  [{:keys [libraries source-id sink-id capacity plan library-availability] :as state}]
   {:fx/type    :v-box
    :spacing    10
    :padding    12
    ;; Keep a floor on the sync area so dragging the divider all the way down can't
    ;; collapse it entirely.
    :min-height 200
-   :children   [(sync-bar libraries source-id sink-id library-availability refresh)
+   :children   [(sync-bar libraries source-id sink-id library-availability)
                 (capacity-bar capacity (some #(when (= (:id %) sink-id) (:name %)) libraries))
                 ;; The filter browser and the track table share a draggable
                 ;; vertical split, so growing the table never squeezes the browser
@@ -401,7 +504,7 @@
      :items [{:fx/type :menu-item :text "Manage Libraries…"
               :on-action {:event/type ::events/settings-open}}]}
     {:fx/type :menu :text "View"
-     :items [{:fx/type :menu-item :text "View Logs…"
+     :items [{:fx/type :menu-item :text "Activity & Logs…"
               :on-action {:event/type ::events/view-logs}}]}]})
 
 (defn- vertical-scrollbar
@@ -441,13 +544,34 @@
       (when (pos? n)
         (Platform/runLater #(.scrollTo lv (dec n)))))))
 
+(def ^:private jobs-expanded-wired
+  "Key stashed on the jobs TitledPane's properties so its listener is wired once."
+  ::jobs-expanded-wired)
+
+(defn- ensure-jobs-expanded-listener!
+  "Report the jobs sidebar's expanded state back to app state when the user clicks
+  its header. cljfx's titled-pane exposes :expanded as a setter with no change
+  callback, so — as with the log scrollbar above — we listen to the property
+  directly and feed the value back through events/on-jobs-expanded!. Setting
+  :expanded from state re-enters here with the value state already holds, so there
+  is no feedback loop."
+  [^TitledPane tp]
+  (let [props (.getProperties tp)]
+    (when-not (.get props jobs-expanded-wired)
+      (.put props jobs-expanded-wired true)
+      (.addListener (.expandedProperty tp)
+                    (reify ChangeListener
+                      (changed [_ _ _ nv]
+                        (events/on-jobs-expanded! (boolean nv))))))))
+
 (defn- attach-log-window!
-  "On the log window root's creation, wire the ListView's tail-follow. cljfx reuses
-  the ListView instance and .setAll's each new :log into its own items list, so a
-  single ListChangeListener fires on every appended line: while following we re-pin to
+  "On the activity window root's creation, wire the ListView's tail-follow. cljfx
+  reuses the ListView instance and .setAll's each new :log into its own items list, so
+  a single ListChangeListener fires on every appended line: while following we re-pin to
   the tail; a ListView keeps its scroll position otherwise, so a frozen view stays put
   as lines stream in. Also wires the scrollbar freeze detector and does the initial
-  pin so the window opens at the newest line."
+  pin so the window opens at the newest line, plus the jobs sidebar's collapse
+  listener."
   [^Parent root]
   (when-let [lv (.lookup root ".list-view")]
     (let [^ListView lv lv]
@@ -457,19 +581,26 @@
                     (reify ListChangeListener
                       (onChanged [_ _]
                         (ensure-log-scrollbar-listener! lv)
-                        (scroll-log-to-tail! lv)))))))
+                        (scroll-log-to-tail! lv))))))
+  (when-let [tp (.lookup root ".titled-pane")]
+    (ensure-jobs-expanded-listener! tp)))
 
 (defn- log-window
-  "On-demand live log window (shown via :log-open?, the View ▸ View Logs… menu). A
-  read-only ListView follows the tail — re-pinned to the newest line as Telemere
-  signals stream in (see dapr.log) — until the user scrolls up, which freezes the view
-  at their position (see state/log-scrolled); the ⤓ button re-engages following and
-  snaps back to the newest line."
+  "On-demand activity window (shown via :log-open?, the View ▸ Activity… menu and
+  the main window's status strip): what the app is working on right now, in a
+  sidebar of per-job rows, beside the live log of what it has done. A read-only
+  ListView follows the tail — re-pinned to the newest line as Telemere signals
+  stream in (see dapr.log) — until the user scrolls up, which freezes the view at
+  their position (see state/log-scrolled); the ⤓ button re-engages following and
+  snaps back to the newest line.
+
+  attach-log-window! finds that ListView by CSS lookup from this root, so the jobs
+  sidebar beside it must stay free of list views."
   [{:keys [log log-follow? log-open?] :as state}]
   {:fx/type  :stage
    :showing  (boolean log-open?)
-   :title    "Dapr — Logs"
-   :width    760
+   :title    "Dapr — Activity"
+   :width    1040
    :height   460
    :on-close-request {:event/type ::events/log-close}
    :scene
@@ -479,23 +610,26 @@
     {:fx/type    fx/ext-on-instance-lifecycle
      :on-created attach-log-window!
      :desc
-     {:fx/type  :v-box
-      :spacing  8
-      :padding  8
-      :children [{:fx/type     :list-view
-                  :v-box/vgrow :always
-                  :items       log}
-                 {:fx/type   :h-box
-                  :spacing   8
-                  :alignment :center-right
-                  :children  [{:fx/type   :button
-                               :text      "⤓ Jump to bottom"
-                               :disable   (boolean log-follow?)
-                               :tooltip   {:fx/type :tooltip
-                                           :text "Resume auto-scrolling to the newest line"}
-                               :on-action {:event/type ::events/log-follow}}
-                              {:fx/type :button :text "Close"
-                               :on-action {:event/type ::events/log-close}}]}]}}}})
+     {:fx/type :border-pane
+      :left    (jobs-panel state)
+      :center
+      {:fx/type  :v-box
+       :spacing  8
+       :padding  8
+       :children [{:fx/type     :list-view
+                   :v-box/vgrow :always
+                   :items       log}
+                  {:fx/type   :h-box
+                   :spacing   8
+                   :alignment :center-right
+                   :children  [{:fx/type   :button
+                                :text      "⤓ Jump to bottom"
+                                :disable   (boolean log-follow?)
+                                :tooltip   {:fx/type :tooltip
+                                            :text "Resume auto-scrolling to the newest line"}
+                                :on-action {:event/type ::events/log-follow}}
+                               {:fx/type :button :text "Close"
+                                :on-action {:event/type ::events/log-close}}]}]}}}}})
 
 (defn- browser-panel-height
   "Estimated height of the open folder browser. Device-specific chooser/connect
@@ -649,24 +783,29 @@
                                                 {:event/type ::events/confirm-cancel})}]}]}}}))
 
 (defn- main-stage
-  "The primary window: menu bar over the sync workspace, with the scan/sync progress
-  strip pinned along the bottom. The activity log now lives in its own on-demand
-  window (View ▸ View Logs…, see log-window) rather than an always-on panel."
+  "The primary window: menu bar over the sync workspace, with a one-line status
+  summary pinned along the bottom while there is a job to report. Both the detail
+  behind that summary and the activity log live in the on-demand activity window
+  (View ▸ Activity & Logs…, or a click on the summary — see log-window), so the
+  workspace itself stays for the libraries."
   [state]
-  {:fx/type :stage
-   :showing true
-   :title   "Dapr — music library sync"
-   :width   860
-   :height  680
-   :on-close-request {:event/type ::events/quit}
-   :scene
-   {:fx/type :scene
-    :stylesheets (theme-stylesheets state)
-    :root
-    {:fx/type :border-pane
-     :top     (menu-bar)
-     :center  (sync-pane state)
-     :bottom  (status-bar (:progress state) (:status state))}}})
+  (let [bar (status-summary state)]
+    {:fx/type :stage
+     :showing true
+     :title   "Dapr — music library sync"
+     :width   860
+     :height  680
+     :on-close-request {:event/type ::events/quit}
+     :scene
+     {:fx/type :scene
+      :stylesheets (theme-stylesheets state)
+      ;; :bottom is omitted, not nil, when nothing is running: cljfx builds a
+      ;; component per prop value and has no lifecycle for nil.
+      :root
+      (cond-> {:fx/type :border-pane
+               :top     (menu-bar)
+               :center  (sync-pane state)}
+        bar (assoc :bottom bar))}}))
 
 (defn root-view
   "Render the whole application: the main window plus the (modal) settings and
