@@ -130,7 +130,7 @@
                 (library-combo ::events/select-sink (name-of sink-id) libraries unavailable)
                 {:fx/type :button :text "↻ Refresh"
                  :tooltip {:fx/type :tooltip
-                           :text "Re-check which devices are reachable and re-scan every library"}
+                           :text "Re-check which devices are reachable and re-scan the chosen source and sink"}
                  :on-action {:event/type ::events/refresh-availability}}
                 (cond-> {:fx/type     :label
                          :h-box/hgrow :always

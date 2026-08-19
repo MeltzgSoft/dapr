@@ -133,8 +133,8 @@
     (fx/mount-renderer state-atom renderer)
     ;; Follow the OS colour scheme so the :system theme tracks it live.
     (watch-os-color-scheme! state-atom)
-    ;; Paint any persisted default source/sink from the cache and queue the
-    ;; background refresh of every library.
+    ;; Paint any persisted default source/sink from the cache and queue a
+    ;; background refresh of those two — the only libraries scanned unasked.
     (events/start! state-atom cache refresher)
     {:renderer renderer :state-atom state-atom}))
 

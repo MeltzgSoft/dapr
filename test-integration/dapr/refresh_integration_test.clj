@@ -47,8 +47,8 @@
             refresher  (refresh/start! {:state-atom state-atom
                                         :cache      {:conn conn :path snapshot}})]
         (try
-          (testing "an enqueued library is walked into the cache and marked complete"
-            (refresh/enqueue! refresher lib-id)
+          (testing "a queued library is walked into the cache and marked complete"
+            (refresh/refresh! refresher [lib-id])
             (is (await-status! state-atom lib-id :complete))
             (is (= #{["a.mp3" 3] ["Album/b.flac" 4]} (catalog-files conn lib-id))
                 "audio files only, keyed by [rel size]")
@@ -62,14 +62,14 @@
           (testing "a deleted file is retracted by the next completed refresh"
             (Files/delete (.resolve dir "a.mp3"))
             (swap! state-atom state/set-refresh-status lib-id :pending)
-            (refresh/enqueue! refresher lib-id)
+            (refresh/refresh! refresher [lib-id])
             (is (await-status! state-atom lib-id :complete))
             (is (= #{["Album/b.flac" 4]} (catalog-files conn lib-id))))
 
           (testing "a new file is picked up by the next refresh"
             (tfs/write! (.resolve dir "Album/c.mp3") "ccccc")
             (swap! state-atom state/set-refresh-status lib-id :pending)
-            (refresh/enqueue! refresher lib-id)
+            (refresh/refresh! refresher [lib-id])
             (is (await-status! state-atom lib-id :complete))
             (is (= #{["Album/b.flac" 4] ["Album/c.mp3" 5]} (catalog-files conn lib-id))))
 

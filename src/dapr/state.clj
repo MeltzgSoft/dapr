@@ -78,6 +78,15 @@
   [state availability]
   (assoc state :library-availability (or availability {})))
 
+(defn library-unreachable?
+  "True when library `lib-id`'s device has been probed and came back unavailable,
+  so there is no point walking it (see dapr.refresh/refresh!). A library that has
+  never been probed (absent from the map) is not assumed unreachable — the walk
+  itself will say. Mirrors dapr.ui.format/library-unavailable?, which asks the same
+  question of the raw map for the library pickers."
+  [state lib-id]
+  (false? (get-in state [:library-availability lib-id])))
+
 (defn clear-unavailable-selection
   "Drop the source and/or sink selection when its library has been probed
   unavailable (explicitly false in `availability`), invalidating any plan. Unprobed

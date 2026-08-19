@@ -90,7 +90,12 @@
         (let [s2 (state/clear-unavailable-selection s {})]
           (is (= 1 (:source-id s2)))
           (is (= 2 (:sink-id s2)))
-          (is (= {:actions []} (:plan s2))))))))
+          (is (= {:actions []} (:plan s2)))))))
+  (testing "library-unreachable? is true only for a library probed and found absent"
+    (let [s (state/set-library-availability state/initial-state {1 true 2 false})]
+      (is (false? (state/library-unreachable? s 1)))
+      (is (true? (state/library-unreachable? s 2)))
+      (is (false? (state/library-unreachable? s 3)) "never probed is not known-absent"))))
 
 (deftest settings-test
   (testing "set-settings replaces the whole map; nil becomes empty"

@@ -1,12 +1,18 @@
 (ns dapr.refresh
   "Background library refresh: the single owner of device scanning.
 
-  One daemon worker walks the configured libraries into the cache, so the UI never
-  has to. The table always paints from the cache (dapr.library.catalogs) and the
-  only device work a user action does is the sync copy/delete itself. That matters
-  because a scan over MTP/SMB is slow — every directory listing is a blocking
-  native round-trip — and device access is serial, so an in-flight scan used to
-  block a user's sync of the same device until it finished.
+  One daemon worker walks libraries into the cache, so the UI never has to. The
+  table always paints from the cache (dapr.library.catalogs) and the only device
+  work a user action does is the sync copy/delete itself. That matters because a
+  scan over MTP/SMB is slow — every directory listing is a blocking native
+  round-trip — and device access is serial, so an in-flight scan used to block a
+  user's sync of the same device until it finished.
+
+  It walks only what the user has *chosen* — the source, the sink, or a library
+  just saved (see refresh!). A DAP that is unplugged and a share that is offline
+  are the normal case, not the exception, so scanning every configured library
+  would spend its time failing to reach devices to fill catalogs nothing is about
+  to read.
 
   Two mechanisms make the refresh yield rather than block:
 
@@ -137,38 +143,30 @@
   (.remove queue lib-id)
   (.addFirst queue lib-id))
 
-(defn enqueue!
-  "Queue library `lib-id` for a background refresh (at the back), marking it
-  :pending. Already-queued libraries are not duplicated."
-  [{:keys [state-atom] :as refresher} lib-id]
-  (swap! state-atom state/set-refresh-status lib-id :pending)
-  (queue-last! refresher lib-id))
+(defn refresh!
+  "Queue `lib-ids` for a background refresh, in front of anything already waiting,
+  and mark them :pending. This is the *only* way a library gets scanned: the app
+  walks what the user has actually chosen — the source, the sink, or a library
+  just saved in the editor — and nothing else. Queueing every configured library
+  instead meant reaching for devices that were not attached, spending a blocking
+  probe per root and leaving a failed row per absent player, to fill a cache
+  nothing was about to read.
 
-(defn prioritize!
-  "Queue `lib-ids` at the *front*, so a library the user just chose or edited is
-  refreshed before anything else waiting. Re-queues a library that already
-  completed this session too: the device may have changed since, and picking a
-  library is exactly when the user wants its list to be right.
+  Re-queues a library that already completed this session: the device may have
+  changed since, and choosing a library is exactly when the user wants its list to
+  be right.
 
-  A library being walked right now is left alone — the in-flight walk is already
-  the fresh one, and re-queueing it would only make it start over."
+  Skipped: a library being walked *right now* (the in-flight walk is already the
+  fresh one, and re-queueing would only restart it), and one the last probe found
+  unreachable (see state/library-unreachable?) — the pickers already refuse to
+  select an unavailable library, but the editor can still save one."
   [{:keys [state-atom] :as refresher} lib-ids]
   (doseq [lib-id (reverse (remove nil? lib-ids))
-          :when  (not= :scanning (state/refresh-status @state-atom lib-id))]
+          :let   [s @state-atom]
+          :when  (and (not= :scanning (state/refresh-status s lib-id))
+                      (not (state/library-unreachable? s lib-id)))]
     (swap! state-atom state/set-refresh-status lib-id :pending)
     (queue-first! refresher lib-id)))
-
-(defn refresh-all!
-  "Queue every configured library, the current source and sink first. Used at
-  launch and by the ↻ Refresh action; unlike prioritize! this re-queues libraries
-  that already completed, so it is the way to pick up device-side changes."
-  [{:keys [state-atom] :as refresher}]
-  (let [s     @state-atom
-        first? (set (remove nil? [(:source-id s) (:sink-id s)]))
-        ids   (map :id (:libraries s))]
-    (doseq [lib-id (concat (filter first? ids) (remove first? ids))]
-      (enqueue! refresher lib-id))
-    (prioritize! refresher [(:source-id s) (:sink-id s)])))
 
 ;; --- worker ------------------------------------------------------------------
 
@@ -228,7 +226,7 @@
 
 (defn start!
   "Start the refresher over `state-atom` and the `cache` component {:conn :path}.
-  Returns the component; nothing is queued until enqueue!/refresh-all! is called."
+  Returns the component; nothing is queued until refresh! is called."
   [{:keys [state-atom cache]}]
   (let [refresher {:state-atom  state-atom
                    :cache       cache

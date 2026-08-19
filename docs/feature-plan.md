@@ -522,11 +522,21 @@ source/sink not `:complete` this session.
 - **Paint happens outside the device lock.** Painting queries the sink's free space,
   which takes *that* device's lock; doing it while holding the refreshed library's
   lock could deadlock against a sync's two-device acquire.
-- **Choosing or saving a library starts a refresh of it**, at the front of the
-  queue — including one that already completed this session, since the device may
-  have changed since and picking a library is exactly when the user wants its list
-  to be right. Only a library being walked *right now* is left alone. ↻ Refresh
-  (`refresh-all!`) re-probes availability and re-queues everything.
+- **Only the chosen libraries are ever walked.** Choosing a source or sink, or
+  saving a library in the editor, is what schedules a scan of it (`refresh/refresh!`
+  — the single queue entry point); nothing scans on launch beyond the persisted
+  default source/sink, and ↻ Refresh re-probes availability and re-queues those
+  same two. The first cut queued *every* configured library at startup, which on a
+  real setup means reaching for a DAP that is unplugged and a share that is offline
+  — a blocking probe per root and a failed row per absent device, to fill catalogs
+  nothing was about to read. Unattached is the normal case for this app, not the
+  exception. A library the last probe found unreachable is skipped even when
+  explicitly queued (`state/library-unreachable?`), so the editor's save path can't
+  reintroduce the same reaching; `::editor-save` therefore probes *before* it
+  queues, since the edit may be what fixed the roots.
+  - Re-queueing includes a library that already completed this session: the device
+    may have changed since, and picking a library is exactly when the user wants its
+    list to be right. Only a library being walked *right now* is left alone.
 - **A failed refresh surfaces in the sync bar**, red, with the reason per library
   in its tooltip (`state/set-refresh-error` + `fmt/refresh-failed?` /
   `refresh-error-detail`) — a background scan has no other way to reach the user.

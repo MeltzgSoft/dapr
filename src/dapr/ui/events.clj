@@ -67,8 +67,9 @@
 
 (defn- select-libraries!
   "React to a new source/sink choice: paint their tracks from the cache instantly,
-  then push them to the front of the background refresh queue. Runs off the JFX
-  thread (the free-space query can block on the device).
+  then queue a background refresh of them. Choosing a library is what schedules a
+  scan of it — nothing else does (see refresh/refresh!). Runs off the JFX thread
+  (the free-space query can block on the device).
 
   Works with or without a sink: a sink-less source shows its tracks alone (empty
   sink catalog, 0 free, nothing pre-selected) so the table is browsable before a
@@ -77,7 +78,7 @@
   [state-atom cache refresher]
   (paint-catalogs! state-atom cache true)
   (let [s @state-atom]
-    (refresh/prioritize! refresher [(:source-id s) (:sink-id s)])))
+    (refresh/refresh! refresher [(:source-id s) (:sink-id s)])))
 
 (defn- run-preview!
   "Compute the selection plan from the catalogs already in state and move to
@@ -177,30 +178,31 @@
                     libs)]
     (swap! state-atom state/set-library-availability avail)))
 
-(defn- refresh-availability!
-  "Re-probe availability, drop any source/sink selection that has become
-  unavailable, repaint the remaining catalogs from the cache, and re-queue a
-  background refresh of every library. Used at launch and by the ↻ Refresh button —
-  which is therefore also how a user forces an already-completed library to be
-  re-walked (see refresh/refresh-all!)."
-  [state-atom cache refresher]
+(defn- refresh-selection!
+  "Probe availability, drop any source/sink selection that has become unavailable,
+  repaint the remaining catalogs from the cache, and re-queue a background refresh
+  of the chosen source and sink. Used at launch and by the ↻ Refresh button — which
+  is therefore how a user forces an already-completed library to be re-walked after
+  plugging a device in or changing it on the device side.
+
+  Only the *chosen* libraries are walked, here as everywhere: the others have no
+  reader waiting on their catalogs, and reaching for a device that isn't attached
+  costs a blocking probe per root and reports a failure the user can do nothing
+  about."
+  [state-atom cache refresher preselect?]
   (probe-availability! state-atom)
   (swap! state-atom (fn [s] (state/clear-unavailable-selection s (:library-availability s))))
   (when (:source-id @state-atom)
-    (paint-catalogs! state-atom cache false))
-  (refresh/refresh-all! refresher))
+    (paint-catalogs! state-atom cache preselect?))
+  (let [s @state-atom]
+    (refresh/refresh! refresher [(:source-id s) (:sink-id s)])))
 
 (defn start!
   "Once the UI is mounted, probe library availability, drop any pre-selected
   default whose device is unreachable, paint the source's tracks from the cache
-  (instant, no walk), and kick off the background refresh."
+  (instant, no walk), and queue a refresh of the source and sink."
   [state-atom cache refresher]
-  (future
-    (probe-availability! state-atom)
-    (swap! state-atom (fn [s] (state/clear-unavailable-selection s (:library-availability s))))
-    (when (:source-id @state-atom)
-      (paint-catalogs! state-atom cache true))
-    (refresh/refresh-all! refresher)))
+  (future (refresh-selection! state-atom cache refresher true)))
 
 (def ^:private mixed-device-msg
   "A library's roots must all live on one device — remove the existing roots first to switch device.")
@@ -375,13 +377,16 @@
             ;; A new or re-rooted library needs a walk before its cache means
             ;; anything, and an edited one may point somewhere else entirely — so
             ;; start one right away rather than behind whatever else is queued.
-            (refresh/prioritize! refresher [lib-id])
-            (future (probe-availability! state-atom)))
+            ;; Probe *first*: refresh! skips a library the last probe called
+            ;; unreachable, and this edit may be the one that fixed its roots.
+            (future (probe-availability! state-atom)
+                    (refresh/refresh! refresher [lib-id])))
           (t/log! "Library needs a name and at least one file://, mtp:// or smb:// root.")))
       ::editor-cancel (swap! state-atom state/cancel-editor)
 
-      ;; sync workflow — a selection paints from the cache and re-prioritizes the
-      ;; background refresh; it never scans (see select-libraries!).
+      ;; sync workflow — a selection paints from the cache and queues the
+      ;; background refresh of what was chosen; it never scans inline (see
+      ;; select-libraries!).
       ::select-source (do (swap! state-atom state/select-source
                                  (library-id-by-name state-atom (:fx/event event)))
                           (future (select-libraries! state-atom cache refresher)))
@@ -396,7 +401,7 @@
       ::facet-click-album    (facet-click! state-atom :album (:fx/event event))
       ::filter-search-artist (swap! state-atom state/set-filter-search :artist (:fx/event event))
       ::filter-search-album  (swap! state-atom state/set-filter-search :album (:fx/event event))
-      ::refresh-availability (future (refresh-availability! state-atom cache refresher))
+      ::refresh-availability (future (refresh-selection! state-atom cache refresher false))
       ::preview       (future (run-preview! state-atom))
 
       ;; Sync is gated on both libraries having completed a refresh this session:

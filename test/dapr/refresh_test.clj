@@ -130,32 +130,52 @@
                                              {:id 3 :name "C" :roots ["file:///c/"]}])
       (swap! state-atom #(assoc % :source-id 3 :sink-id 2))
 
-      (testing "refresh-all! queues every library, source and sink first"
-        (refresh/refresh-all! refresher)
-        (is (= [3 2 1] (vec queue)))
-        (is (= {1 :pending 2 :pending 3 :pending} (get-in @state-atom [:refresh :status]))))
+      (testing "only the chosen libraries are queued — not every configured one"
+        (refresh/refresh! refresher [3 2])
+        (is (= [3 2] (vec queue)))
+        (is (= {2 :pending 3 :pending} (get-in @state-atom [:refresh :status]))
+            "the library nobody selected is never even marked pending"))
 
-      (testing "enqueue! does not duplicate an already-queued library"
-        (refresh/enqueue! refresher 1)
-        (is (= [3 2 1] (vec queue))))
+      (testing "queueing an already-queued library does not duplicate it"
+        (refresh/refresh! refresher [2])
+        (is (= [2 3] (vec queue))))
 
-      (testing "prioritize! moves a newly chosen library to the front"
-        (refresh/prioritize! refresher [1])
-        (is (= [1 3 2] (vec queue))))
+      (testing "a newly chosen library goes to the front"
+        (refresh/refresh! refresher [1])
+        (is (= [1 2 3] (vec queue))))
 
       (testing "choosing a library that already completed re-queues it anyway —
                 the device may have changed since"
         (swap! state-atom state/set-refresh-status 2 :complete)
         (.remove queue 2)
-        (refresh/prioritize! refresher [2])
+        (refresh/refresh! refresher [2])
         (is (= [2 1 3] (vec queue)))
         (is (= :pending (state/refresh-status @state-atom 2))))
 
       (testing "the library being walked right now is left to finish"
         (swap! state-atom state/set-refresh-status 3 :scanning)
         (.remove queue 3)
-        (refresh/prioritize! refresher [3])
+        (refresh/refresh! refresher [3])
         (is (= [2 1] (vec queue)))
         (is (= :scanning (state/refresh-status @state-atom 3))))
+
+      (testing "a library the probe found unreachable is not queued at all —
+                its device isn't attached, so a walk could only fail"
+        (swap! state-atom state/set-library-availability {1 false 2 true})
+        (.clear queue)
+        (refresh/refresh! refresher [1 2])
+        (is (= [2] (vec queue))))
+
+      (testing "an unprobed library is queued — the walk itself will say"
+        (swap! state-atom state/set-refresh-status 3 :complete) ; no longer :scanning
+        (.clear queue)
+        (is (nil? (get-in @state-atom [:library-availability 3])) "3 was never probed")
+        (refresh/refresh! refresher [3])
+        (is (= [3] (vec queue))))
+
+      (testing "nils (no source or no sink chosen) are skipped"
+        (.clear queue)
+        (refresh/refresh! refresher [nil nil])
+        (is (= [] (vec queue))))
       (finally
         (.delete path)))))
