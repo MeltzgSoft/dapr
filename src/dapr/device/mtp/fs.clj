@@ -9,10 +9,26 @@
   File copy/delete/scan against an mtp:// URI go through the generic NIO code in
   dapr.fs.nio; only device discovery and FileSystem opening are here."
   (:require [clojure.string :as str]
-            [dapr.device.fs :as dfs])
+            [dapr.device.fs :as dfs]
+            [taoensso.telemere :as t])
   (:import (java.net URI)
            (java.nio.file FileSystemNotFoundException FileSystems Files LinkOption Paths)
            (org.meltzg.fs.mtp MTPDeviceBridge)))
+
+(defonce ^:private bridge-touched?
+  ;; Whether this process has actually reached for the native bridge. MTPDeviceBridge
+  ;; is an enum singleton whose getInstance *detects devices and opens a session per
+  ;; device* — so it is not free to call, and in particular closing "just in case"
+  ;; summons the very thing it means to release (see close!). defonce so a REPL
+  ;; namespace reload can't forget a session this process still holds.
+  (atom false))
+
+(defn- mark-touched!
+  "Record that we are about to reach for the bridge, so halt knows there is
+  something to release. Called *before* the reach: a detection that opened sessions
+  and then threw still needs closing."
+  []
+  (reset! bridge-touched? true))
 
 (defn- ensure-filesystem!
   "Ensure the MTP filesystem addressed by `uri` is open."
@@ -20,6 +36,7 @@
   (try
     (FileSystems/getFileSystem uri)
     (catch FileSystemNotFoundException _
+      (mark-touched!)
       (FileSystems/newFileSystem uri {}))))
 
 (defmethod dfs/root-path! :mtp [uri-str]
@@ -48,21 +65,48 @@
            (first))
       id-str))
 
-(defn close!
-  "Close the MTP device bridge, releasing every open native device session so the
-  device isn't left locked for other apps. Best-effort: no device / no native libmtp
-  means nothing to close (mirrors devices!, which degrades to empty on any native
-  error). The bridge resets itself on close and re-detects on the next getInstance,
-  so this is safe across a REPL reset."
+(def ^:private close-timeout-millis
+  "How long close! waits for the native bridge to release the device before giving
+  up on it. libmtp can sit in a USB reset for a long time when a device is wedged
+  (PTP_ERROR_IO ... trying again after resetting USB interface), and this runs on
+  the system halt — so an unbounded wait hangs shutdown, and with it an ig-repl
+  reset."
+  5000)
+
+(defn- close-bridge!
+  "Close the native bridge. Split out from close! so the decision to call it at all
+  is testable without native access."
   []
-  (try
-    (.close (MTPDeviceBridge/getInstance))
-    (catch Throwable _ nil)))
+  (.close (MTPDeviceBridge/getInstance)))
+
+(defn close!
+  "Release every open native MTP device session so the device isn't left locked for
+  other apps.
+
+  **A no-op unless this process actually opened one.** `getInstance` creates the
+  bridge if it does not exist, detecting devices and opening a session to each, so
+  an unconditional close reaches for the hardware precisely to let go of it: on a
+  machine with a phone plugged in that cost a multi-second USB round trip on every
+  halt — and, against a wedged device, an unbounded PTP_ERROR_IO reset loop — even
+  when the app had never touched MTP. That is what hung `(reset)` in the REPL.
+
+  Bounded by close-timeout-millis for the case where we *did* open a session and the
+  device will not let go: the halt moves on and leaves the rest to the JVM exit,
+  mirroring dapr.refresh/stop!. Best-effort otherwise — no device or no native
+  libmtp means nothing to close. The bridge re-detects on the next getInstance, so
+  this is safe across a REPL reset."
+  []
+  (when (compare-and-set! bridge-touched? true false)
+    (let [done (future (try (close-bridge!) (catch Throwable _ nil)))]
+      (when (= ::timeout (deref done close-timeout-millis ::timeout))
+        (t/log! {:level :warn
+                 :msg   "MTP device did not release in time; leaving it to the JVM exit."})))))
 
 (defn devices!
   "Detect connected MTP devices and return a vector of endpoints
   {:id <vendor:product:serial> :name <display-name> :uri \"mtp://<id>/\"}."
   []
+  (mark-touched!)
   (let [bridge (MTPDeviceBridge/getInstance)]
     (->> (.getDeviceInfo bridge)
          (mapv (fn [entry]
