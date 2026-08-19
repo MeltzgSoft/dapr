@@ -108,11 +108,21 @@
     replace a file another handle holds** and throws instead. Serializing removes
     that race everywhere rather than only where the OS tolerates it.
 
-  Serializing costs nothing worth having: the writers are persisting snapshots of
-  an immutable DB value to one path, so all but the last are redundant by
-  construction — concurrency here buys duplicated work, not throughput. The lock
-  is process-wide; a second process is still covered by the unique temp plus the
-  atomic move."
+  Serializing also makes *last-writer-wins correct* rather than merely tolerable.
+  The DB is read inside the lock, so a writer entering after another necessarily
+  reads a value at least as new as its predecessor's, and the last file to land is
+  the newest. Read outside the lock, two writers could invert: a thread that
+  deref'd an older DB could finish its move *after* one that deref'd a newer DB,
+  leaving the file behind the state already persisted — no data lost from the DB,
+  but a crash in that window would lose the difference.
+
+  Nothing is lost by the redundant writers either way: each snapshot is a whole-DB
+  image rather than a delta, and every caller shares one `conn` (the data writes
+  are d/transact!, serialized by DataScript itself). So concurrency here buys
+  duplicated work, not throughput. The lock is process-wide; a second process is
+  covered only by the unique temp plus the atomic move — and two app instances
+  sharing one cache would have divergent in-memory DBs anyway, which no write lock
+  can reconcile."
   [conn path]
   (locking snapshot-lock
     (let [f      (io/file path)
@@ -121,6 +131,9 @@
           tmp    (Files/createTempFile parent (str (.getName f) ".") ".tmp"
                                        (into-array FileAttribute []))]
       (try
+        ;; Reading @conn *inside* the lock is load-bearing, not incidental: hoist
+        ;; it out (to "avoid serializing the DB under a lock") and an older image
+        ;; can land after a newer one. See the docstring.
         (spit (.toFile tmp) (pr-str {:version snapshot-version :db (d/serializable @conn)}))
         (Files/move tmp (.toPath f)
                     (into-array CopyOption [StandardCopyOption/REPLACE_EXISTING]))
