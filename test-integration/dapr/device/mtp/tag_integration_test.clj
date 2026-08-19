@@ -116,10 +116,19 @@
                   "GetPartialObject ranged reads recover every VORBIS_COMMENT field + duration")
               (skip "device does not support MTP partial reads — audio view unavailable")))
           (testing "the mtp index view is well-formed; matches when the device populated it"
-            (let [mtp-view (read-view p "mtp")]
+            (let [mtp-view (read-view p "mtp")
+                  title    (get mtp-view "title")]
               (is (= mtp-view-attrs (set (keys mtp-view)))
                   "the mtp view exposes every field but discNumber")
-              (when-not (str/blank? (get mtp-view "title"))
+              ;; A blank title does not detect "not indexed yet": Android answers
+              ;; for a file its media scanner has not reached by echoing the FILE
+              ;; NAME as the title (with 0/nil in every other field), and that
+              ;; scanner runs asynchronously — this fixture is written, read and
+              ;; deleted long before it gets there, so on such a device the
+              ;; comparison below would always run against placeholder values.
+              ;; Treat the view as populated only when the device supplied a title
+              ;; of its own; this assertion is opportunistic by design.
+              (when-not (or (str/blank? title) (= (str (.getFileName p)) title))
                 (is (= (dissoc expected-audio-view "discNumber") mtp-view)
                     "when the device indexed the upload, its properties match the embedded tags"))))
           (testing "tags! returns the full embedded tag set from the device, not path-derived"
