@@ -17,7 +17,8 @@
             [dapr.domain.library :as lib]
             [dapr.fs.paths :as paths])
   (:import (java.io File)
-           (java.nio.file CopyOption Files StandardCopyOption)))
+           (java.nio.file CopyOption Files StandardCopyOption)
+           (java.nio.file.attribute FileAttribute)))
 
 (def schema
   "DataScript schema. Only refs and the composite-identity tuples need
@@ -88,15 +89,30 @@
 
 (defn snapshot!
   "Atomically write `conn`'s DB to `path` as versioned EDN (temp file + move), so
-  a crash mid-write can't corrupt an existing snapshot."
+  a crash mid-write can't corrupt an existing snapshot.
+
+  The temp file is **unique per call**, because snapshots are not serialized: a
+  sync persists its result from one thread while another writer persists from
+  another, and nothing arbitrates between them. Sharing one temp name would let
+  each writer spit over the other's half-written bytes and move the result into
+  place, corrupting exactly the file this dance exists to protect. With distinct
+  temps every move lands a complete snapshot of an immutable DB value, so the last
+  writer simply wins."
   [conn path]
-  (let [f   (io/file path)
-        tmp (io/file (str (.getPath f) ".tmp"))]
-    (io/make-parents f)
-    (spit tmp (pr-str {:version snapshot-version :db (d/serializable @conn)}))
-    (Files/move (.toPath tmp) (.toPath f)
-                (into-array CopyOption [StandardCopyOption/REPLACE_EXISTING]))
-    path))
+  (let [f      (io/file path)
+        _      (io/make-parents f)
+        parent (.toPath (.getParentFile (.getAbsoluteFile f)))
+        tmp    (Files/createTempFile parent (str (.getName f) ".") ".tmp"
+                                     (into-array FileAttribute []))]
+    (try
+      (spit (.toFile tmp) (pr-str {:version snapshot-version :db (d/serializable @conn)}))
+      (Files/move tmp (.toPath f)
+                  (into-array CopyOption [StandardCopyOption/REPLACE_EXISTING]))
+      path
+      (finally
+        ;; A no-op after a successful move; on failure it keeps a botched write
+        ;; from accumulating beside the snapshot.
+        (Files/deleteIfExists tmp)))))
 
 ;; --- libraries ---------------------------------------------------------------
 

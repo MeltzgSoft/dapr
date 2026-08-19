@@ -257,6 +257,31 @@
       (finally
         (Files/deleteIfExists p)))))
 
+(deftest concurrent-snapshots-test
+  ;; Snapshots are not serialized: more than one writer persists the cache, from
+  ;; different threads, with nothing arbitrating between them. Each must therefore
+  ;; land a whole snapshot, never a mix of two.
+  (let [^java.nio.file.Path p (Files/createTempFile "dapr-cache" ".edn" (make-array FileAttribute 0))
+        path (.toFile p)]
+    (try
+      (let [conn   (cache/empty-conn)
+            a      (cache/upsert-library! conn {:name "A" :roots ["file:///a/"]})
+            _      (cache/replace-library-tracks!
+                    conn a (for [i (range 200)] (track (str "t" i ".mp3") i :title (str "T" i))))
+            errors (atom [])
+            wave   (fn [] (->> (repeatedly 8 #(future (try (dotimes [_ 5] (cache/snapshot! conn path))
+                                                           (catch Throwable t (swap! errors conj t)))))
+                               doall
+                               (run! deref)))]
+        (wave)
+        (testing "no writer trips over another's temp file"
+          (is (empty? (map ex-message @errors))))
+        (testing "what lands on disk is a complete snapshot, not a blend of two"
+          (is (= (cache/library-catalog (d/db conn) a)
+                 (cache/library-catalog (d/db (cache/load! path)) a)))))
+      (finally
+        (Files/deleteIfExists p)))))
+
 (deftest corrupt-snapshot-falls-back-test
   (let [^java.nio.file.Path p (Files/createTempFile "dapr-cache" ".edn" (make-array FileAttribute 0))
         path (.toFile p)]
