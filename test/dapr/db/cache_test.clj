@@ -258,9 +258,11 @@
         (Files/deleteIfExists p)))))
 
 (deftest concurrent-snapshots-test
-  ;; Snapshots are not serialized: more than one writer persists the cache, from
-  ;; different threads, with nothing arbitrating between them. Each must therefore
-  ;; land a whole snapshot, never a mix of two.
+  ;; More than one writer persists the cache, from different threads, with nothing
+  ;; but snapshot! itself arbitrating between them. Each must land a whole
+  ;; snapshot, never a mix of two — and must not throw, which on Windows means the
+  ;; writers cannot be racing to replace the same target file (it refuses to
+  ;; replace a file another handle holds, where POSIX renames over it happily).
   (let [^java.nio.file.Path p (Files/createTempFile "dapr-cache" ".edn" (make-array FileAttribute 0))
         path (.toFile p)]
     (try
@@ -274,8 +276,11 @@
                                doall
                                (run! deref)))]
         (wave)
-        (testing "no writer trips over another's temp file"
-          (is (empty? (map ex-message @errors))))
+        (testing "no writer trips over another, on any platform"
+          ;; Report the exception *class* too: the platform-specific failure here
+          ;; is a Windows AccessDenied/FileSystem exception on replacing the
+          ;; target, and a CI log that names it beats one that only says "failed".
+          (is (empty? (map #(str (.getName (class %)) ": " (ex-message %)) @errors))))
         (testing "what lands on disk is a complete snapshot, not a blend of two"
           (is (= (cache/library-catalog (d/db conn) a)
                  (cache/library-catalog (d/db (cache/load! path)) a)))))

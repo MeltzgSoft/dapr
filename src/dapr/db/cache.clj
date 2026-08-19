@@ -87,32 +87,48 @@
           (backup-corrupt! f)
           (empty-conn))))))
 
+(defonce ^:private snapshot-lock
+  ;; Serializes snapshot writes across the process. Nothing else arbitrates them:
+  ;; a sync persists its result from one thread while another writer persists from
+  ;; another. See snapshot! for why one-at-a-time is both correct and free.
+  (Object.))
+
 (defn snapshot!
   "Atomically write `conn`'s DB to `path` as versioned EDN (temp file + move), so
   a crash mid-write can't corrupt an existing snapshot.
 
-  The temp file is **unique per call**, because snapshots are not serialized: a
-  sync persists its result from one thread while another writer persists from
-  another, and nothing arbitrates between them. Sharing one temp name would let
-  each writer spit over the other's half-written bytes and move the result into
-  place, corrupting exactly the file this dance exists to protect. With distinct
-  temps every move lands a complete snapshot of an immutable DB value, so the last
-  writer simply wins."
+  Writers are **serialized**, and each uses a **temp file unique to the call**.
+  Both matter, for different races:
+
+  - Two writers sharing one temp name would spit over each other's half-written
+    bytes and then move the result into place — corrupting the very file this
+    dance protects. Unique temps fix that.
+  - Unique temps still leave both writers moving onto the *same target*. POSIX
+    renames atomically, so the loser is merely redundant; **Windows refuses to
+    replace a file another handle holds** and throws instead. Serializing removes
+    that race everywhere rather than only where the OS tolerates it.
+
+  Serializing costs nothing worth having: the writers are persisting snapshots of
+  an immutable DB value to one path, so all but the last are redundant by
+  construction — concurrency here buys duplicated work, not throughput. The lock
+  is process-wide; a second process is still covered by the unique temp plus the
+  atomic move."
   [conn path]
-  (let [f      (io/file path)
-        _      (io/make-parents f)
-        parent (.toPath (.getParentFile (.getAbsoluteFile f)))
-        tmp    (Files/createTempFile parent (str (.getName f) ".") ".tmp"
-                                     (into-array FileAttribute []))]
-    (try
-      (spit (.toFile tmp) (pr-str {:version snapshot-version :db (d/serializable @conn)}))
-      (Files/move tmp (.toPath f)
-                  (into-array CopyOption [StandardCopyOption/REPLACE_EXISTING]))
-      path
-      (finally
-        ;; A no-op after a successful move; on failure it keeps a botched write
-        ;; from accumulating beside the snapshot.
-        (Files/deleteIfExists tmp)))))
+  (locking snapshot-lock
+    (let [f      (io/file path)
+          _      (io/make-parents f)
+          parent (.toPath (.getParentFile (.getAbsoluteFile f)))
+          tmp    (Files/createTempFile parent (str (.getName f) ".") ".tmp"
+                                       (into-array FileAttribute []))]
+      (try
+        (spit (.toFile tmp) (pr-str {:version snapshot-version :db (d/serializable @conn)}))
+        (Files/move tmp (.toPath f)
+                    (into-array CopyOption [StandardCopyOption/REPLACE_EXISTING]))
+        path
+        (finally
+          ;; A no-op after a successful move; on failure it keeps a botched write
+          ;; from accumulating beside the snapshot.
+          (Files/deleteIfExists tmp))))))
 
 ;; --- libraries ---------------------------------------------------------------
 
