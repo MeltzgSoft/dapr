@@ -36,6 +36,13 @@
       (let [f (io/file d (format "dapr.%d.log" n))]
         (if (.exists f) (recur (inc n)) (.getPath f))))))
 
+(defn error-summary
+  "A short one-line description of `t` for a status field or an on-screen message —
+  its message, or its class name when it has none (e.g. a StackOverflowError). The
+  full stack trace goes to the log file via the signal's :error."
+  [^Throwable t]
+  (or (not-empty (.getMessage t)) (.getName (class t))))
+
 (defn signal->line
   "Format a Telemere signal as one activity-log line: `HH:mm:ss LEVEL message`."
   [{:keys [inst level msg_]}]

@@ -323,6 +323,105 @@
       (is (true? (:log-follow? (state/follow-log
                                 (assoc following :log-follow? false))))))))
 
+;; --- background refresh ------------------------------------------------------
+
+(def ^:private src-cat
+  {["a.mp3" 1] {:key ["a.mp3" 1] :rel "a.mp3" :size 1}
+   ["b.mp3" 2] {:key ["b.mp3" 2] :rel "b.mp3" :size 2}})
+
+(deftest update-catalogs-test
+  (let [base (-> state/initial-state
+                 (state/set-catalogs src-cat {} 1000)
+                 (state/toggle-track ["a.mp3" 1]))]
+    (testing "set-catalogs pre-selects the sink's tracks (a fresh source/sink choice)"
+      (is (= #{["b.mp3" 2]}
+             (:selected (state/set-catalogs state/initial-state src-cat
+                                            {["b.mp3" 2] (src-cat ["b.mp3" 2])} 1000)))))
+
+    (testing "a background repaint keeps the user's selection"
+      (is (= #{["a.mp3" 1]} (:selected base)))
+      (is (= #{["a.mp3" 1]} (:selected (state/update-catalogs base src-cat {} 1000)))))
+
+    (testing "a selected track that has vanished from both catalogs is dropped"
+      (let [s (state/update-catalogs base (dissoc src-cat ["a.mp3" 1]) {} 1000)]
+        (is (= #{} (:selected s)))))
+
+    (testing "capacity is recomputed against the new catalogs"
+      (let [s (state/update-catalogs base src-cat {} 500)]
+        (is (= 500 (:free-bytes s)))
+        (is (= 1 (get-in s [:capacity :used])))))))
+
+(deftest refresh-status-test
+  (let [s (-> state/initial-state
+              (state/set-libraries [lib-a lib-b])
+              (assoc :source-id "a" :sink-id "b")
+              (state/set-refresh-status "a" :scanning)
+              (state/set-refresh-active "a")
+              (state/set-refresh-progress {:done 3 :total 9}))]
+    (testing "status and progress are projected per library"
+      (is (= :scanning (state/refresh-status s "a")))
+      (is (nil? (state/refresh-status s "b")))
+      (is (= "a" (get-in s [:refresh :active])))
+      (is (= {:done 3 :total 9} (get-in s [:refresh :progress]))))
+
+    (testing "only a completed walk counts as complete"
+      (is (false? (state/library-complete? s "a")))
+      (is (true? (state/library-complete? (state/set-refresh-status s "a" :complete) "a"))))
+
+    (testing "handing over to another library clears the previous progress"
+      (let [s2 (state/set-refresh-active s "b")]
+        (is (= "b" (get-in s2 [:refresh :active])))
+        (is (nil? (get-in s2 [:refresh :progress])))))
+
+    (testing "the sync gate lists the chosen libraries that haven't completed"
+      (is (= ["A" "B"] (mapv :name (state/sync-incomplete-libraries s))))
+      (let [done (-> s
+                     (state/set-refresh-status "a" :complete)
+                     (state/set-refresh-status "b" :complete))]
+        (is (empty? (state/sync-incomplete-libraries done))))
+      (testing "a source and sink on one library is listed once"
+        (is (= 1 (count (state/sync-incomplete-libraries (assoc s :sink-id "a")))))))
+
+    (testing "a deleted library is forgotten, including as the active scan"
+      (let [s2 (state/forget-refresh s "a")]
+        (is (nil? (state/refresh-status s2 "a")))
+        (is (nil? (get-in s2 [:refresh :active])))))))
+
+(deftest refresh-error-test
+  (let [failed (-> state/initial-state
+                   (state/set-libraries [lib-a lib-b])
+                   (state/set-refresh-error "a" "device gone"))]
+    (testing "a failed refresh records its reason, for the UI to surface"
+      (is (= :error (state/refresh-status failed "a")))
+      (is (= {"a" "device gone"} (state/refresh-errors failed))))
+
+    (testing "a background failure leaves the foreground status and plan alone"
+      (let [s (-> state/initial-state
+                  (state/set-plan [] {:add 1})
+                  (state/set-refresh-error "a" "device gone"))]
+        (is (= :planned (:status s)))
+        (is (some? (:plan s)))
+        (is (nil? (:error s)))))
+
+    (testing "re-running that library clears the stale message"
+      (is (empty? (state/refresh-errors (state/set-refresh-status failed "a" :pending))))
+      (is (empty? (state/refresh-errors (state/set-refresh-status failed "a" :complete)))))
+
+    (testing "an error keeps the library out of :complete, so sync still confirms"
+      (is (false? (state/library-complete? failed "a")))
+      (is (= ["A"] (mapv :name (state/sync-incomplete-libraries
+                                (assoc failed :source-id "a"))))))
+
+    (testing "deleting the library drops its error too"
+      (is (empty? (state/refresh-errors (state/forget-refresh failed "a")))))))
+
+(deftest confirm-test
+  (testing "open-confirm holds the dialog description; close-confirm clears it"
+    (let [c {:kind :sync :message "sure?"}
+          s (state/open-confirm state/initial-state c)]
+      (is (= c (:confirm s)))
+      (is (nil? (:confirm (state/close-confirm s)))))))
+
 (deftest set-error-test
   (testing "records the message and moves to :error"
     (let [s (state/set-error state/initial-state "boom")]

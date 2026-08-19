@@ -30,6 +30,18 @@
   "Key identifying the concrete device/share a root lives on."
   (fn [uri-str] (device-type uri-str)))
 
+(defmulti arbitrate-access?
+  "True when access to a device of this type should be handed out to one holder at a
+  time, so a user's operation can preempt the background refresher rather than
+  compete with it (see dapr.device.coordinator). Two different reasons lead here —
+  the driver genuinely serializes access (mtp://), or the device is reached over one
+  slow shared connection that a walk would otherwise saturate (smb://) — while a
+  device that is cheap and parallel-safe (file://) declares false.
+
+  Defaults to true: over-arbitrating a new device type merely serializes it, whereas
+  under-arbitrating one lets a background scan starve a user's sync."
+  identity)
+
 (defmulti selectable-root?
   "True when `uri-str` points at a folder that can be saved as a library root."
   (fn [uri-str] (device-type uri-str)))
@@ -48,6 +60,7 @@
 
 (defmethod supported? :default [_] false)
 (defmethod root-device-key :default [_] nil)
+(defmethod arbitrate-access? :default [_] true)
 (defmethod selectable-root? :default [_] false)
 (defmethod library-menu-label :default [device-type] (name device-type))
 (defmethod browser-root-label :default [_] "Places")

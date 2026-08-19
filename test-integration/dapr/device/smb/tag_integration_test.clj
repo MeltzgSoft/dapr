@@ -14,7 +14,8 @@
             [dapr.audio-fixtures :as fixtures]
             [dapr.device.fs :as device-fs]
             [dapr.device.smb.fs-integration-test :as smb-it]
-            [dapr.fs.nio :as nio])
+            [dapr.fs.nio :as nio]
+            [dapr.test-fs :as tfs])
   (:import (java.nio ByteBuffer)
            (java.nio.file Files OpenOption Path StandardOpenOption)
            (java.nio.file.attribute FileAttribute)))
@@ -50,7 +51,7 @@
             dst-root (device-fs/root-path! guest-url)]
         (try
           (nio/copy-file! src-root dst-root rel)
-          (let [track (first (filter #(= rel (:rel %)) (nio/catalog! [guest-url])))]
+          (let [track (first (filter #(= rel (:rel %)) (tfs/scan-tracks! [guest-url])))]
             (is (some? track) "the copied FLAC should be catalogued")
             (is (= :embedded (:source track))
                 "tags come from the file's own embedded VORBIS_COMMENT, not the path")
@@ -70,7 +71,7 @@
             dst-root (device-fs/root-path! guest-url)]
         (try
           (nio/copy-file! src-root dst-root rel)
-          (let [track (first (filter #(= rel (:rel %)) (nio/catalog! [guest-url])))]
+          (let [track (first (filter #(= rel (:rel %)) (tfs/scan-tracks! [guest-url])))]
             (is (= {:artist "The Band" :album "The Record" :title "Track"}
                    (select-keys track [:artist :album :title])))
             (is (= :path (:source track))

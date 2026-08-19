@@ -30,8 +30,13 @@
    :settings       {}     ; persisted app settings (theme, log dir, …); see dapr.db.cache
    :os-color-scheme nil   ; OS-reported scheme (:dark/:light); drives the :system theme
    :status         :idle  ; :idle :scanning :planned :syncing :done :error
-   :scan-gen       0      ; bumped per scan; lets a new scan supersede a running one
    :progress       nil    ; {:done n :total t}
+   ;; Background library refresh (see dapr.refresh): per-library status
+   ;; (:pending/:scanning/:paused/:complete/:error), the library being walked right
+   ;; now, and its progress. Deliberately separate from :status, which tracks the
+   ;; *foreground* op — a refresh must never disable Preview/Sync.
+   :refresh        {:status {} :errors {} :active nil :progress nil}
+   :confirm        nil    ; pending confirmation dialog, or nil (see open-confirm)
    :log            []     ; vector of message strings (capped at max-log-lines)
    :log-appends    0      ; total lines ever appended; drives log auto-scroll
    :log-open?      false  ; whether the live log window is showing
@@ -140,6 +145,23 @@
              :sink-catalog sink-catalog
              :free-bytes free-bytes
              :selected (lib/initial-selection sink-catalog))
+      (recompute-capacity)))
+
+(defn update-catalogs
+  "Re-point the catalogs at a freshly refreshed cache view *without* disturbing the
+  user's selection — only tracks that have since disappeared from both catalogs are
+  dropped from it. Used by the background refresh (see dapr.refresh), where
+  set-catalogs' pre-selection would silently discard what the user had ticked."
+  [state source-catalog sink-catalog free-bytes]
+  (-> state
+      (assoc :source-catalog source-catalog
+             :sink-catalog sink-catalog
+             :free-bytes free-bytes)
+      (update :selected (fn [selected]
+                          (into #{}
+                                (filter #(or (contains? source-catalog %)
+                                             (contains? sink-catalog %)))
+                                selected)))
       (recompute-capacity)))
 
 (defn toggle-track
@@ -314,6 +336,96 @@
         (assoc-in [:browser :cwd] (:uri (last crumbs)))
         (assoc-in [:browser :entries] [])
         (assoc-in [:browser :loading?] true))))
+
+;; --- background refresh ------------------------------------------------------
+;; Projection of the background refresher's progress (dapr.refresh) for the UI and
+;; for the sync gate. A library reaches :complete only once a walk of it has run
+;; end to end this session — which is what makes the cache authoritative about
+;; *absence* (see dapr.db.cache/reconcile-library-tracks!) and therefore safe to
+;; sync against.
+
+(defn set-refresh-status
+  "Record library `lib-id`'s refresh status (:pending / :scanning / :paused /
+  :complete). Clears any recorded failure: reaching any of these means a newer
+  attempt has superseded it, so the stale message must stop being shown (see
+  set-refresh-error)."
+  [state lib-id status]
+  (-> state
+      (assoc-in [:refresh :status lib-id] status)
+      (update-in [:refresh :errors] dissoc lib-id)))
+
+(defn set-refresh-error
+  "Record that library `lib-id`'s refresh failed, with `message` — a one-liner the
+  sync bar can show, since a background failure has no other way to reach the user
+  (the full trace is in the log). Kept out of the app-wide :error/:status, which
+  belong to the *foreground* op: a scan that failed must not blank a computed plan
+  or make the window look broken."
+  [state lib-id message]
+  (-> state
+      (assoc-in [:refresh :status lib-id] :error)
+      (assoc-in [:refresh :errors lib-id] message)))
+
+(defn refresh-errors
+  "Failed refreshes as {lib-id message} (empty when all is well)."
+  [state]
+  (get-in state [:refresh :errors] {}))
+
+(defn refresh-status
+  "Refresh status of library `lib-id` this session, or nil if it has never been
+  queued."
+  [state lib-id]
+  (get-in state [:refresh :status lib-id]))
+
+(defn library-complete?
+  "True when library `lib-id`'s background refresh has run to completion this
+  session, so its cached catalog matches the device."
+  [state lib-id]
+  (= :complete (refresh-status state lib-id)))
+
+(defn set-refresh-active
+  "Record the library currently being walked (nil when the refresher is idle),
+  clearing progress as it changes hands."
+  [state lib-id]
+  (-> state
+      (assoc-in [:refresh :active] lib-id)
+      (assoc-in [:refresh :progress] nil)))
+
+(defn set-refresh-progress
+  "Record {:done :total} for the library being walked (nil to clear)."
+  [state progress]
+  (assoc-in state [:refresh :progress] progress))
+
+(defn forget-refresh
+  "Drop library `lib-id` from the refresh projection (it was deleted)."
+  [state lib-id]
+  (-> state
+      (update-in [:refresh :status] dissoc lib-id)
+      (update-in [:refresh :errors] dissoc lib-id)
+      (cond-> (= lib-id (get-in state [:refresh :active]))
+        (set-refresh-active nil))))
+
+(defn sync-incomplete-libraries
+  "The chosen source/sink libraries whose refresh has not completed this session —
+  empty when both are up to date. A sync against these would plan from a catalog
+  that may still be a stale superset of the device, so the UI confirms first (see
+  dapr.ui.events)."
+  [state]
+  (->> [(:source-id state) (:sink-id state)]
+       (remove nil?)
+       (distinct)
+       (remove #(library-complete? state %))
+       (keep #(library-by-id state %))
+       (vec)))
+
+;; --- confirmation dialog -----------------------------------------------------
+
+(defn open-confirm
+  "Show a confirmation dialog: {:kind :title :message :confirm-text}. The event it
+  dispatches on confirm is chosen by :kind in the view (see dapr.ui.views)."
+  [state confirm]
+  (assoc state :confirm confirm))
+
+(defn close-confirm [state] (assoc state :confirm nil))
 
 ;; --- misc status -------------------------------------------------------------
 

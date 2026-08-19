@@ -8,6 +8,12 @@
     (str "mtp://" (.getAuthority (java.net.URI. ^String uri)))
     (catch java.net.URISyntaxException _ nil)))
 
+;; The strong case: melt-jfs serializes calls per MTP device (one native session,
+;; reached through a singleton bridge), so concurrent users cannot overlap at all —
+;; they queue in the driver, where a user's sync has no way to jump the queue ahead
+;; of a running scan. Arbitrating here is what makes that queue preemptible.
+(defmethod device/arbitrate-access? :mtp [_] true)
+
 (defmethod device/selectable-root? :mtp [uri]
   (boolean (device/scheme uri)))
 

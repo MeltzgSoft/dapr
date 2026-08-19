@@ -2,9 +2,6 @@
   (:require [clojure.test :refer [deftest is testing]]
             [dapr.domain.library :as lib]))
 
-(defn- track [name size root rel]
-  {:name name :size size :root root :rel rel})
-
 (deftest library-valid?-test
   (testing "a named library whose roots share one device is valid"
     (is (true? (lib/library-valid? {:name "Music" :roots ["file:///a" "file:///b"]})))
@@ -67,15 +64,6 @@
                            :artist "Artist" :album "Album" :title "Song"})))
     (is (= [nil nil nil 42 "a/song.mp3"]
            (lib/track-key {:name "song.mp3" :size 42 :rel "a/song.mp3"})))))
-
-(deftest catalog-test
-  (testing "indexes tracks by [artist album title size rel]; first wins when two roots share a key"
-    (let [a  (track "a.mp3" 1 "r1" "a.mp3")
-          b  (track "b.mp3" 2 "r1" "sub/b.mp3")
-          a2 (track "a.mp3" 1 "r2" "a.mp3")    ; same tags+size+rel under another root
-          cat (lib/catalog [a b a2])]
-      (is (= #{[nil nil nil 1 "a.mp3"] [nil nil nil 2 "sub/b.mp3"]} (set (keys cat))))
-      (is (= "r1" (:root (cat [nil nil nil 1 "a.mp3"])))))))
 
 (deftest track-total-size-test
   (testing "sums sizes"
