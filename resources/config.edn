@@ -1,5 +1,10 @@
 {:dapr/cache    {}
- :dapr/state    {:cache #ig/ref :dapr/cache}
+ ;; :ui holds deployment knobs the views render from, kept here rather than
+ ;; compiled into the view code. :fallback-seconds is how often a region
+ ;; re-fetches itself when no server notification arrives — the safety net for a
+ ;; dropped event stream, not the mechanism (see dapr.web.events).
+ :dapr/state    {:cache #ig/ref :dapr/cache
+                 :ui    {:fallback-seconds 15}}
  ;; Configure logging once the state atom exists but before the renderer starts
  ;; scanning, so file + live-log output captures everything from launch.
  :dapr/log      {:cache #ig/ref :dapr/cache :state-atom #ig/ref :dapr/state}

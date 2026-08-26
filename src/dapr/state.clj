@@ -33,6 +33,7 @@
    :editor         nil    ; library being added/edited, or nil
    :browser        nil    ; folder browser, or nil
    :settings       {}     ; persisted app settings (theme, log dir, …); see dapr.db.cache
+   :ui             {}     ; UI config from config.edn (see set-ui); not user-editable
    :os-color-scheme nil   ; OS-reported scheme (:dark/:light); drives the :system theme
    :status         :idle  ; :idle :scanning :planned :syncing :done :error
    :progress       nil    ; {:done n :total t}
@@ -230,6 +231,30 @@
                     state
                     togglable))
           (recompute-capacity)))))
+
+;; --- UI configuration --------------------------------------------------------
+;; Deployment knobs the views render from, supplied by the Integrant system from
+;; resources/config.edn (see :dapr/state) rather than being compiled in. Distinct
+;; from :settings below, which is the *user's* persisted preferences: nothing in
+;; the UI edits these, and they are not written back to the cache.
+
+(def default-ui
+  "Fallback UI configuration, used when config.edn says nothing."
+  {:fallback-seconds 15})
+
+(defn set-ui
+  "Replace the UI configuration map, filling anything absent from default-ui."
+  [state ui]
+  (assoc state :ui (merge default-ui ui)))
+
+(defn fallback-seconds
+  "How often a region re-fetches itself *without* being told to. The server pushes
+  a notification the moment a region's data moves (see dapr.web.events), so this
+  timer is not the mechanism — it is the safety net for a stream that never
+  connected or quietly died, and the reason such a page goes slightly stale
+  rather than frozen."
+  [state]
+  (get-in state [:ui :fallback-seconds] (:fallback-seconds default-ui)))
 
 ;; --- app settings ------------------------------------------------------------
 ;; The :settings map mirrors the persisted app config (dapr.db.cache); the event

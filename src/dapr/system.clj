@@ -46,11 +46,12 @@
   (when (and conn path)
     (cache/snapshot! conn path)))
 
-(defmethod ig/init-key :dapr/state [_ {:keys [cache]}]
+(defmethod ig/init-key :dapr/state [_ {:keys [cache ui]}]
   (let [db (d/db (:conn cache))]
     (atom (-> state/initial-state
               (state/set-libraries (cache/libraries db))
               (state/set-settings (cache/app-settings db))
+              (state/set-ui ui)
               ;; Pre-select the persisted default source/sink so a launch lands
               ;; ready to sync (their catalogs are loaded by the renderer once it
               ;; mounts — see events/start!).
