@@ -19,3 +19,13 @@ pom.xml.asc
 # JVM crash / replay logs (e.g. from native MTP access)
 hs_err_pid*.log
 replay_pid*.log
+
+# Browser e2e tests (see e2e/README.md): installed deps, the seeded scratch
+# library and config dir the suite runs against, and Playwright's own output.
+# None of it is source — node_modules alone is thousands of vendored files.
+/e2e/node_modules/
+/e2e/.tmp/
+/e2e/test-results/
+/e2e/playwright-report/
+/e2e/blob-report/
+/e2e/.cache/
