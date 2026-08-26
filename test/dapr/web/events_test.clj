@@ -35,6 +35,22 @@
 (defn- events-for [received region]
   (filter #(str/includes? % (str "region-" (name region))) @received))
 
+(deftest timings-test
+  (testing "the publisher's timings come from the caller (the system passes
+            config.edn's), with defaults for anything unset"
+    (let [state-atom (atom state/initial-state)
+          hub        (events/start! state-atom {:coalesce-millis 5})]
+      (try
+        (is (= 5 (:coalesce-millis hub)))
+        (is (= (:heartbeat-millis events/default-timings) (:heartbeat-millis hub)))
+        (finally (events/stop! hub)))))
+  (testing "no timings at all is all defaults"
+    (let [hub (events/start! (atom state/initial-state))]
+      (try
+        (is (= (select-keys events/default-timings [:coalesce-millis :heartbeat-millis])
+               (select-keys hub [:coalesce-millis :heartbeat-millis])))
+        (finally (events/stop! hub))))))
+
 (deftest changed-regions-test
   (testing "only the regions whose digest moved"
     (is (= #{:log} (events/changed-regions {:log "1" :status "a"} {:log "2" :status "a"}))))

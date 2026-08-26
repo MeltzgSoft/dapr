@@ -29,18 +29,19 @@
             [org.httpkit.server :as http])
   (:import (java.util.concurrent ArrayBlockingQueue TimeUnit)))
 
-(def ^:private coalesce-millis
-  "How long the publisher lets a burst of state writes settle before digesting.
-  Long enough that a scan's progress updates collapse into one notification,
-  short enough to stay imperceptible."
-  100)
+(def default-timings
+  "Fallback publisher timings, for anything resources/config.edn leaves unset.
 
-(def ^:private heartbeat-millis
-  "Idle gap after which a comment line is sent. It keeps the connection from being
-  reaped by anything in between, and — because a write to a dead channel is how a
-  dead channel is noticed — it is also what prunes subscribers whose browser went
-  away without closing cleanly."
-  25000)
+  :coalesce-millis is how long the publisher lets a burst of state writes settle
+  before digesting — long enough that a scan's progress updates collapse into one
+  notification, short enough to stay imperceptible.
+
+  :heartbeat-millis is the idle gap after which a comment line is sent. It keeps
+  the connection from being reaped by anything in between, and — because a write
+  to a dead channel is how a dead channel is noticed — it is also what prunes
+  subscribers whose browser went away without closing cleanly."
+  {:coalesce-millis  100
+   :heartbeat-millis 25000})
 
 (def ^:private heartbeat ": ping\n\n")
 
@@ -92,16 +93,16 @@
   "The loop that turns state writes into notifications: wait to be woken, let the
   burst settle, then send one notification per region that actually moved. On an
   idle timeout it sends a heartbeat instead."
-  [{:keys [state-atom subscribers wake running?]} seen]
+  [{:keys [state-atom subscribers wake running? coalesce-millis heartbeat-millis]} seen]
   (fn []
     (try
       (while @running?
         (let [woken? (some? (.poll ^ArrayBlockingQueue wake
-                                   heartbeat-millis TimeUnit/MILLISECONDS))]
+                                   (long heartbeat-millis) TimeUnit/MILLISECONDS))]
           (when @running?
             (if woken?
               (do
-                (Thread/sleep coalesce-millis)
+                (Thread/sleep (long coalesce-millis))
                 ;; Anything that arrived while settling is already in the state we
                 ;; are about to digest, so its wake-up is spent.
                 (.clear ^ArrayBlockingQueue wake)
@@ -115,21 +116,27 @@
 
 (defn start!
   "Watch `state-atom` and publish region notifications to subscribers. Returns the
-  hub, which the SSE route subscribes to and stop! shuts down."
-  [state-atom]
-  (let [hub (-> {:state-atom  state-atom
-                 :subscribers (atom #{})
-                 ;; Capacity one, and offer (never put): the queue is a doorbell,
-                 ;; not a backlog. A write while one is already pending is dropped,
-                 ;; which is the coalescing.
-                 :wake        (ArrayBlockingQueue. 1)
-                 :running?    (atom true)})
-        seen   (atom (region-digests @state-atom))
-        worker (Thread. ^Runnable (publisher hub seen) "dapr-events")]
-    (add-watch state-atom ::events
-               (fn [_ _ _ _] (.offer ^ArrayBlockingQueue (:wake hub) :changed)))
-    (doto worker (.setDaemon true) (.start))
-    (assoc hub :worker worker)))
+  hub, which the SSE route subscribes to and stop! shuts down.
+
+  `timings` overrides :coalesce-millis / :heartbeat-millis; the system supplies
+  them from resources/config.edn, and anything absent falls back to
+  default-timings."
+  ([state-atom] (start! state-atom nil))
+  ([state-atom timings]
+   (let [hub    (assoc (merge default-timings timings)
+                       :state-atom  state-atom
+                       :subscribers (atom #{})
+                       ;; Capacity one, and offer (never put): the queue is a
+                       ;; doorbell, not a backlog. A write while one is already
+                       ;; pending is dropped, which is the coalescing.
+                       :wake        (ArrayBlockingQueue. 1)
+                       :running?    (atom true))
+         seen   (atom (region-digests @state-atom))
+         worker (Thread. ^Runnable (publisher hub seen) "dapr-events")]
+     (add-watch state-atom ::events
+                (fn [_ _ _ _] (.offer ^ArrayBlockingQueue (:wake hub) :changed)))
+     (doto worker (.setDaemon true) (.start))
+     (assoc hub :worker worker))))
 
 (defn stop!
   "Stop publishing and drop every subscriber."
