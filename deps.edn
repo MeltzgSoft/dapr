@@ -75,7 +75,10 @@
   ;; region silently falls back to its timer — which looks exactly like a slow
   ;; app rather than a broken one. htmx 2 moved extensions to packages of their
   ;; own; this is that package.
-  org.webjars.npm/htmx-ext-sse {:mvn/version "2.2.3"}}
+  org.webjars.npm/htmx-ext-sse {:mvn/version "2.2.3"}
+  ;; Command-line parsing for dapr.main's --port/--host/--no-browser, so the flags
+  ;; are validated and the --help summary generated rather than hand-rolled.
+  org.clojure/tools.cli        {:mvn/version "1.1.230"}}
 
  :aliases
  {;; Run the desktop app.

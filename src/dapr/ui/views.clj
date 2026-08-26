@@ -134,7 +134,7 @@
         view  (assoc view :page page)
         shown (fmt/page-rows rows page page-size)]
     [:section#track-table.card
-     (html/poll :table (digest/digest state view :table) (view-params view))
+     (html/poll state :table (digest/digest state view :table) (view-params view))
      [:header
       [:span.title (format "Tracks (%d)" total)]
       [:span.grow]
@@ -182,7 +182,7 @@
 
 (defn- facet-list [state region col values selected]
   [:ul.facet-list
-   (assoc (html/poll region (digest/digest state nil region)) :id (name region))
+   (assoc (html/poll state region (digest/digest state nil region)) :id (name region))
    (facet-item col nil "All" (nil? selected))
    (for [v values]
      (facet-item col v v (= v selected)))])
@@ -251,7 +251,7 @@
   "Source and sink pickers. The scanning they kick off reports itself in the status
   strip along the bottom, not here."
   [state]
-  [:div#sync-bar (html/poll :sync-bar (digest/digest state nil :sync-bar))
+  [:div#sync-bar (html/poll state :sync-bar (digest/digest state nil :sync-bar))
    (library-select state :source (:source-id state))
    (library-select state :sink (:sink-id state))])
 
@@ -263,7 +263,7 @@
   (let [{:keys [capacity sink-id libraries]} state
         sink-name (when sink-id (fmt/library-name libraries sink-id))
         over?     (and sink-name (fmt/over-capacity? capacity))]
-    [:div#capacity.row (html/poll :capacity (digest/digest state nil :capacity))
+    [:div#capacity.row (html/poll state :capacity (digest/digest state nil :capacity))
      [:span.label (if sink-name (str "Capacity — " sink-name) "Capacity")]
      [:span {:class (html/classes "meter" (when over? "over"))}
       [:span {:style (format "width: %.1f%%"
@@ -274,7 +274,7 @@
 (defn controls
   "Preview and Sync, plus the plan summary they produce."
   [state]
-  [:div#controls (html/poll :controls (digest/digest state nil :controls))
+  [:div#controls (html/poll state :controls (digest/digest state nil :controls))
    [:button.btn {:hx-post   "/actions/preview"
                  :hx-target "#controls"
                  :hx-swap   "outerHTML"
@@ -308,7 +308,7 @@
   [state]
   (let [{:keys [text running? error?]} (fmt/status-summary state)]
     [:footer#status-bar
-     (merge (html/poll :status (digest/digest state nil :status))
+     (merge (html/poll state :status (digest/digest state nil :status))
             {:class (if text "active" "idle")})
      (when text
        [:button.ghost.grow.row {:hx-post   "/actions/activity/open"
@@ -335,7 +335,7 @@
   answer rather than leave a blank gap."
   [state]
   (let [rows (fmt/tasks state)]
-    [:div#jobs-list (html/poll :jobs (digest/digest state nil :jobs))
+    [:div#jobs-list (html/poll state :jobs (digest/digest state nil :jobs))
      (if (seq rows)
        (map job-row rows)
        [:p.muted "Nothing running."])]))
@@ -345,7 +345,7 @@
   view to the newest line and holds the reader's place when they scroll up — with
   no scripting, where JavaFX needed a scrollbar listener to tell the two apart."
   [state]
-  [:pre#log-lines.log (html/poll :log (digest/digest state nil :log))
+  [:pre#log-lines.log (html/poll state :log (digest/digest state nil :log))
    (str/join "\n" (reverse (:log state)))])
 
 (defn activity
@@ -417,7 +417,7 @@
         allowed (lib/roots-device-key (get-in state [:editor :roots]))]
     [:fieldset#browser-panel
      (if (device-views/browser-polls? browser)
-       (html/poll :browser (digest/digest state nil :browser))
+       (html/poll state :browser (digest/digest state nil :browser))
        {})
      [:legend "Browse for a folder"]
      (device-views/browser-content allowed browser)

@@ -43,12 +43,12 @@
   "Start the UI server and return {:stop! :port :url}. `open-browser?` also points
   the user's browser at it, which is what makes `clojure -M:run` feel like
   launching an app; an Electron shell passes false and opens its own window."
-  [{:keys [state-atom cache refresher host port open-browser? on-quit]}]
+  [{:keys [state-atom cache refresher host port open-browser? on-quit events]}]
   (let [host    (or host "127.0.0.1")
         ;; Watches the state atom and pushes "region X moved" to every open page
-        ;; (see dapr.web.events). Started before the handler so no request can
-        ;; reach /events without one.
-        hub     (events/start! state-atom)
+        ;; (see dapr.web.events), on the timings config.edn gives it. Started
+        ;; before the handler so no request can reach /events without one.
+        hub     (events/start! state-atom events)
         handler (routes/handler state-atom {:cache     cache
                                             :refresher refresher
                                             :hub       hub
