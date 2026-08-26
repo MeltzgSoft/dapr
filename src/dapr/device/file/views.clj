@@ -6,6 +6,3 @@
 
 (defmethod device-views/browser-content [:file :browse] [_ browser]
   (device-views/folder-browser browser))
-
-(defmethod device-views/browser-height [:file :browse] [_]
-  330)

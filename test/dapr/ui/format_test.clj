@@ -122,17 +122,14 @@
   (testing "false when not yet planned"
     (is (false? (fmt/can-sync? {:status :idle :plan nil})))))
 
-(deftest active-theme-test
-  (testing "explicit :dark/:light win regardless of the OS scheme"
-    (is (= :dark (fmt/active-theme :dark :light)))
-    (is (= :light (fmt/active-theme :light :dark))))
-  (testing ":system (or nil) follows the OS scheme"
-    (is (= :dark (fmt/active-theme :system :dark)))
-    (is (= :light (fmt/active-theme :system :light)))
-    (is (= :dark (fmt/active-theme nil :dark))))
-  (testing ":system falls back to :light when the OS scheme is unknown"
-    (is (= :light (fmt/active-theme :system nil)))
-    (is (= :light (fmt/active-theme nil nil)))))
+(deftest theme-attr-test
+  (testing "an explicit choice pins the palette"
+    (is (= "dark" (fmt/theme-attr :dark)))
+    (is (= "light" (fmt/theme-attr :light))))
+  (testing ":system (or nothing set) stamps no attribute, leaving the stylesheet's
+            prefers-color-scheme query to follow the OS"
+    (is (nil? (fmt/theme-attr :system)))
+    (is (nil? (fmt/theme-attr nil)))))
 
 (deftest name-list-test
   (testing "quotes and joins library names readably"
@@ -220,7 +217,7 @@
       (is (= 5 (count rows)) "four libraries and the count")
       (is (= "4 libraries" (:detail (last rows))))))
 
-  (testing "rows have stable identities, so cljfx can diff them"
+  (testing "rows have stable identities, so a row can be addressed on its own"
     (is (= [:foreground [:refresh 2] :queued]
            (mapv :id (fmt/tasks {:status :syncing :libraries task-libs
                                  :refresh {:status {2 :scanning 3 :pending}}}))))))
@@ -261,6 +258,7 @@
   (testing "unprobed libraries (absent from the map) are treated as available"
     (is (false? (fmt/library-unavailable? {} 1)))
     (is (false? (fmt/library-unavailable? nil 1)))))
+
 ;; --- track table ------------------------------------------------------------
 
 (defn- track [artist album title size]

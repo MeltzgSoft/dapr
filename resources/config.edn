@@ -5,11 +5,11 @@
  ;; dropped event stream, not the mechanism (see dapr.web.events).
  :dapr/state    {:cache #ig/ref :dapr/cache
                  :ui    {:fallback-seconds 15}}
- ;; Configure logging once the state atom exists but before the renderer starts
+ ;; Configure logging once the state atom exists but before anything starts
  ;; scanning, so file + live-log output captures everything from launch.
  :dapr/log      {:cache #ig/ref :dapr/cache :state-atom #ig/ref :dapr/state}
  ;; Halt-only component: closes the SMB FileSystem cache and the MTP device bridge on
- ;; shutdown. The renderer refs it so it halts *after* the UI (and any scan) is down.
+ ;; shutdown. The server refs it so it halts *after* the UI (and any scan) is down.
  :dapr/devices  {}
  ;; Per-device locks arbitrating the background refresh against foreground user ops.
  :dapr/coordinator {}
@@ -20,8 +20,23 @@
                   :cache       #ig/ref :dapr/cache
                   :coordinator #ig/ref :dapr/coordinator
                   :devices     #ig/ref :dapr/devices}
- :dapr/renderer {:state-atom #ig/ref :dapr/state
-                 :cache      #ig/ref :dapr/cache
-                 :log        #ig/ref :dapr/log
-                 :refresher  #ig/ref :dapr/refresher
-                 :devices    #ig/ref :dapr/devices}}
+ ;; The web UI. Loopback-only by default: the endpoints act on the user's own
+ ;; devices with no authentication, so they have no business on the network.
+ ;; dapr.main overrides :host/:port/:open-browser? from the command line or the
+ ;; DAPR_HOST / DAPR_PORT / DAPR_NO_BROWSER environment variables.
+ :dapr/server {:state-atom     #ig/ref :dapr/state
+               :cache          #ig/ref :dapr/cache
+               :log            #ig/ref :dapr/log
+               :refresher      #ig/ref :dapr/refresher
+               :devices        #ig/ref :dapr/devices
+               :host           "127.0.0.1"
+               :port           7373
+               :open-browser?  true
+               ;; Server-sent event publisher (dapr.web.events). :coalesce-millis
+               ;; is how long a burst of state writes settles before one
+               ;; notification goes out — a scan writes far too often to push
+               ;; every change. :heartbeat-millis is the idle gap after which a
+               ;; comment line is sent, which both keeps the connection alive and
+               ;; is how a browser that vanished gets pruned.
+               :events         {:coalesce-millis  100
+                                :heartbeat-millis 25000}}}

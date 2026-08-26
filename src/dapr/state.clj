@@ -3,8 +3,8 @@
   current source/sink selection, the chosen tracks, and sync status. The
   transition functions here are pure (state -> state); the atom that holds the
   state is created and managed by the Integrant system (dapr.system), and the
-  side-effecting event handlers (dapr.ui.events) apply these transitions via
-  swap! (and persist libraries to disk)."
+  side-effecting actions behind the UI's controls (dapr.ui.actions) apply these
+  transitions via swap! (and persist libraries to the cache DB)."
   (:require [clojure.string :as str]
             [dapr.domain.capacity :as cap]
             [dapr.domain.library :as lib]))
@@ -24,9 +24,10 @@
    :free-bytes     0      ; usable bytes across the sink's distinct devices
    :capacity       {:used 0 :budget 0 :free 0}
    ;; Bumped every time the catalogs are repainted from the cache (see
-   ;; set-catalogs/update-catalogs). A view rendered against an earlier version
-   ;; can tell it is out of date, which is how a background scan's findings
-   ;; reach a display that holds no state of its own.
+   ;; set-catalogs/update-catalogs). The UI polls fragments with the version it
+   ;; last rendered, and the server answers "unchanged" unless this has moved —
+   ;; which is how a background scan's findings reach the open page without the
+   ;; page holding any state of its own (see dapr.web.fragments).
    :catalog-version 0
    :plan           nil    ; {:actions [...] :summary {...}}
    :settings-open? false  ; whether the library-management modal is showing
@@ -34,7 +35,6 @@
    :browser        nil    ; folder browser, or nil
    :settings       {}     ; persisted app settings (theme, log dir, …); see dapr.db.cache
    :ui             {}     ; UI config from config.edn (see set-ui); not user-editable
-   :os-color-scheme nil   ; OS-reported scheme (:dark/:light); drives the :system theme
    :status         :idle  ; :idle :scanning :planned :syncing :done :error
    :progress       nil    ; {:done n :total t}
    ;; Background library refresh (see dapr.refresh): per-library status
@@ -47,11 +47,8 @@
    :confirm        nil    ; pending confirmation dialog, or nil (see open-confirm)
    :log            []     ; vector of message strings (capped at max-log-lines)
    :log-appends    0      ; total lines ever appended; drives log auto-scroll
-   :log-open?      false  ; whether the live log window is showing
-   :log-follow?    true   ; live log window auto-scrolls (follows) the newest line
-   :log-scroll     0.0    ; last seen log scrollbar value (0..1); drives freeze detect
+   :log-open?      false  ; whether the activity panel is showing
    :log-file       nil    ; path of the current log file (see dapr.log)
-   :jobs-open?     true   ; activity window's jobs sidebar expanded (see set-jobs-open)
    :error          nil})
 
 (def max-log-lines
@@ -83,7 +80,7 @@
 
 (defn set-library-availability
   "Record the probed reachability of libraries as an id->bool map (see
-  dapr.ui.events/probe-availability!)."
+  dapr.ui.actions/probe-availability!)."
   [state availability]
   (assoc state :library-availability (or availability {})))
 
@@ -155,7 +152,7 @@
   (assoc-in state [:filter-search col] text))
 
 (defn- bump-catalog-version
-  "Mark the catalogs as changed, so a view rendered against the previous ones
+  "Mark the catalogs as changed, so a page rendered against the previous view
   learns it is out of date (see :catalog-version in initial-state)."
   [state]
   (update state :catalog-version (fnil inc 0)))
@@ -258,7 +255,7 @@
 
 ;; --- app settings ------------------------------------------------------------
 ;; The :settings map mirrors the persisted app config (dapr.db.cache); the event
-;; handler persists alongside these pure transitions (see dapr.ui.events).
+;; action persists alongside these pure transitions (see dapr.ui.actions).
 
 (defn set-settings
   "Replace the whole settings map (loaded from the cache on startup)."
@@ -277,13 +274,6 @@
   "Read app setting `k`, falling back to `default` (nil) when unset."
   ([state k] (setting state k nil))
   ([state k default] (get (:settings state) k default)))
-
-(defn set-os-color-scheme
-  "Record the OS-reported colour scheme (:dark/:light, or nil when unknown). Not a
-  persisted setting — it tracks the live OS preference so the :system theme can
-  follow it (see dapr.ui.format/active-theme)."
-  [state scheme]
-  (assoc state :os-color-scheme scheme))
 
 ;; --- settings modal ----------------------------------------------------------
 
@@ -459,7 +449,7 @@
   "The chosen source/sink libraries whose refresh has not completed this session —
   empty when both are up to date. A sync against these would plan from a catalog
   that may still be a stale superset of the device, so the UI confirms first (see
-  dapr.ui.events)."
+  dapr.ui.actions)."
   [state]
   (->> [(:source-id state) (:sink-id state)]
        (remove nil?)
@@ -519,47 +509,14 @@
   (assoc state :log-file path))
 
 (defn open-log
-  "Show the live log window, re-engaging tail-following so it opens at the newest
-  line."
+  "Show the activity panel (running jobs beside the live log)."
   [state]
-  (assoc state :log-open? true :log-follow? true))
+  (assoc state :log-open? true))
 
 (defn close-log
-  "Hide the live log window."
+  "Hide the activity panel."
   [state]
   (assoc state :log-open? false))
-
-(defn set-jobs-open
-  "Expand or collapse the activity window's jobs sidebar. Held in state rather than
-  left to the TitledPane so the panel survives a re-render — the jobs list changes
-  constantly while a scan runs, and its collapsed state is the user's, not the
-  node's."
-  [state open?]
-  (assoc state :jobs-open? (boolean open?)))
-
-(defn follow-log
-  "Re-engage tail-following (the live log window's 'jump to bottom' button); the next
-  render snaps the view back to the newest line."
-  [state]
-  (assoc state :log-follow? true))
-
-(def ^:private log-scroll-epsilon
-  "Minimum scrollbar-value drop (of the 0..1 range) treated as a deliberate scroll up,
-  rather than rounding noise around the programmatic pin-to-bottom."
-  0.02)
-
-(defn log-scrolled
-  "Record the live log ListView's new vertical scrollbar value `pos` (0..1). A drop
-  below the last value while following means the user scrolled up to read scrollback,
-  so tail-following is disengaged — the view then freezes there (a ListView keeps its
-  position as lines append) until they jump back to the bottom (see follow-log). The
-  programmatic pin-to-bottom only ever raises the value, so it never trips this."
-  [state pos]
-  (let [pos (double pos)
-        up? (and (:log-follow? state)
-                 (< pos (- (:log-scroll state) log-scroll-epsilon)))]
-    (cond-> (assoc state :log-scroll pos)
-      up? (assoc :log-follow? false))))
 
 (defn set-error
   "Record an error message and move to the :error status."

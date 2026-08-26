@@ -17,7 +17,7 @@
 (defn- plan-for!
   "The plan the app would compute for `selected` over two real directories: both
   catalogs scanned off disk and handed to the pure planner, exactly as
-  dapr.ui.events/run-preview! does (it reads the catalogs from the cache the
+  dapr.ui.actions/run-preview! does (it reads the catalogs from the cache the
   background refresher fills, see dapr.library.catalogs). `opts` add
   :sink-only-handling / :source-roots."
   ([src-lib snk-lib selected] (plan-for! src-lib snk-lib selected nil))

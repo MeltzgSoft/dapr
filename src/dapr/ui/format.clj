@@ -1,8 +1,8 @@
 (ns dapr.ui.format
   "Pure presentation helpers for the UI: human-readable formatting, the derived
   predicates the controls enable themselves from, and the track table's row
-  projection. No side effects and no JavaFX, so this logic is unit-testable in
-  isolation (dapr.ui.views handles the rendering)."
+  projection. No side effects and no markup, so this logic is unit-testable in
+  isolation — dapr.ui.views turns what is here into HTML."
   (:require [clojure.string :as str]
             [dapr.domain.capacity :as cap]))
 
@@ -272,16 +272,18 @@
   [availability id]
   (false? (get availability id)))
 
-(defn active-theme
-  "Resolve the effective UI theme (:dark or :light) from the persisted `:theme`
-  setting and the OS-reported colour scheme. An explicit :dark/:light wins; :system
-  (or an unset theme) follows the OS, defaulting to :light when the OS scheme is
-  unknown (nil)."
-  [theme os-color-scheme]
+(defn theme-attr
+  "Value for the document's `data-theme` attribute, from the persisted `:theme`
+  setting: \"dark\"/\"light\" pin the palette, and nil (the :system setting, or none
+  set) leaves the attribute off so the stylesheet's prefers-color-scheme query
+  follows the OS. The OS scheme no longer has to be polled and pushed into state
+  as it did under JavaFX — the browser reports it, and re-reports it when the
+  user changes it, with no round trip."
+  [theme]
   (case theme
-    :dark  :dark
-    :light :light
-    (or os-color-scheme :light)))
+    :dark  "dark"
+    :light "light"
+    nil))
 
 (defn can-preview?
   "True when distinct source and sink libraries are chosen and not busy."

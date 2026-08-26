@@ -110,11 +110,9 @@
       (is (= :system (state/setting s :missing :system)))
       (testing "a nil value clears just that key"
         (is (= {:log-dir "/tmp"} (:settings (state/set-setting s :theme nil)))))))
-  (testing "set-os-color-scheme records the OS scheme (not a persisted setting)"
-    (let [s (state/set-os-color-scheme state/initial-state :dark)]
-      (is (= :dark (:os-color-scheme s)))
-      (is (= {} (:settings s)))
-      (is (nil? (:os-color-scheme (state/set-os-color-scheme s nil)))))))
+  (testing "the OS colour scheme is not state's business any more — the browser
+            reports it to the stylesheet (see dapr.ui.format/theme-attr)"
+    (is (not (contains? state/initial-state :os-color-scheme)))))
 
 (deftest set-catalogs-test
   (testing "pre-selects sink tracks and computes capacity"
@@ -136,8 +134,8 @@
         (is (= #{} (:selected (state/toggle-track s ["a" 10]))))))))
 
 (deftest catalog-version-test
-  (testing "every repaint of the catalogs moves the version, so a view rendered
-            earlier can tell that a background scan found something"
+  (testing "every repaint of the catalogs moves the version, so an open page can
+            tell that a background scan found something"
     (let [cat {["a" 10] {:size 10 :key ["a" 10]}}
           s0  state/initial-state
           s1  (state/set-catalogs s0 cat {} 100)
@@ -146,7 +144,7 @@
       (is (= 1 (:catalog-version s1)))
       (is (= 2 (:catalog-version s2)))))
   (testing "nothing else touches it — a selection is the user's own doing and the
-            view already has the answer"
+            page already has the answer"
     (let [s (state/set-catalogs state/initial-state {["a" 10] {:size 10 :key ["a" 10]}} {} 100)]
       (is (= (:catalog-version s)
              (:catalog-version (state/toggle-track s ["a" 10])))))))
@@ -315,42 +313,14 @@
         (is (not (instance? clojure.lang.APersistentVector$SubVector (:log s))))))))
 
 (deftest log-window-test
-  (testing "open-log/close-log toggle the live log window flag"
+  (testing "open-log/close-log toggle the activity panel flag"
     (is (true? (:log-open? (state/open-log state/initial-state))))
     (is (false? (:log-open? (-> state/initial-state state/open-log state/close-log)))))
-  (testing "open-log re-engages tail-following so it opens at the newest line"
-    (is (true? (:log-follow? (-> state/initial-state
-                                 (assoc :log-follow? false)
-                                 state/open-log)))))
   (testing "set-log-file records the active log path"
     (is (= "/tmp/dapr.0.log" (:log-file (state/set-log-file state/initial-state "/tmp/dapr.0.log")))))
-  (testing "the jobs sidebar starts expanded and remembers being collapsed"
-    (is (true? (:jobs-open? state/initial-state)))
-    (is (false? (:jobs-open? (state/set-jobs-open state/initial-state false))))
-    (is (true? (:jobs-open? (-> state/initial-state
-                                (state/set-jobs-open false)
-                                (state/set-jobs-open true)))))
-    (testing "coercing whatever the property listener hands over"
-      (is (false? (:jobs-open? (state/set-jobs-open state/initial-state nil)))))))
-
-(deftest log-follow-test
-  (let [following (assoc state/initial-state :log-follow? true :log-scroll 1.0)]
-    (testing "scrolling up while following disengages follow and freezes at the position"
-      (let [s (state/log-scrolled following 0.6)]
-        (is (false? (:log-follow? s)))
-        (is (= 0.6 (:log-scroll s)))))
-    (testing "the programmatic pin (scrollbar value increasing) keeps following"
-      (let [s (state/log-scrolled (assoc following :log-scroll 0.5) 0.9)]
-        (is (true? (:log-follow? s)))
-        (is (= 0.9 (:log-scroll s)))))
-    (testing "sub-epsilon jitter around the pin is ignored"
-      (is (true? (:log-follow? (state/log-scrolled following 0.995)))))
-    (testing "while not following, scrolling never spuriously re-engages"
-      (is (false? (:log-follow? (state/log-scrolled
-                                 (assoc following :log-follow? false) 0.3)))))
-    (testing "follow-log re-engages tail-following"
-      (is (true? (:log-follow? (state/follow-log
-                                (assoc following :log-follow? false))))))))
+  (testing "tail-following is the log box's own layout now, not state — the
+            column-reverse scroller pins and freezes without being told"
+    (is (not-any? #(contains? state/initial-state %) [:log-follow? :log-scroll :jobs-open?]))))
 
 ;; --- background refresh ------------------------------------------------------
 

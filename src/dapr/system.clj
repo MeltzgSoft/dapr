@@ -1,25 +1,21 @@
 (ns dapr.system
-  "Integrant system definition. The only stateful components are the application
-  state atom and the cljfx renderer that mounts onto it; all logic lives in the
-  pure namespaces. (No HTTP server or DB, so the reitit and Integrant DB-pool
-  conventions from the backend best-practices do not apply.)"
-  (:require [cljfx.api :as fx]
-            [clojure.java.io :as io]
+  "Integrant system definition. The stateful components are the application state
+  atom, the DataScript cache, the background refresher and the HTTP server the UI
+  is served from; all logic lives in the pure namespaces."
+  (:require [clojure.java.io :as io]
             [dapr.db.cache :as cache]
+            [dapr.db.migrations :as migrations]
             [dapr.device.coordinator :as coord]
             [dapr.device.mtp.fs :as mtp-fs]
             [dapr.device.smb.fs :as smb-fs]
             [dapr.library.store :as store]
             [dapr.log :as log]
-            [dapr.db.migrations :as migrations]
             [dapr.refresh :as refresh]
             [dapr.state :as state]
-            [dapr.ui.events :as events]
-            [dapr.ui.views :as views]
+            [dapr.ui.actions :as actions]
+            [dapr.web.server :as server]
             [datascript.core :as d]
-            [integrant.core :as ig])
-  (:import (javafx.application Platform)
-           (javafx.beans.value ChangeListener)))
+            [integrant.core :as ig]))
 
 (defn config!
   "Read the Integrant system configuration from resources/config.edn."
@@ -53,8 +49,8 @@
               (state/set-settings (cache/app-settings db))
               (state/set-ui ui)
               ;; Pre-select the persisted default source/sink so a launch lands
-              ;; ready to sync (their catalogs are loaded by the renderer once it
-              ;; mounts — see events/start!).
+              ;; ready to sync (their catalogs are painted from the cache once the
+              ;; server is up — see actions/start!).
               (assoc :source-id (cache/default-library db :source)
                      :sink-id   (cache/default-library db :sink))))))
 
@@ -101,44 +97,12 @@
   ;; left the device before its session is closed.
   (refresh/stop! refresher))
 
-(defn- color-scheme->kw
-  "Map a javafx.application.ColorScheme to :dark/:light (nil when unrecognized)."
-  [cs]
-  (case (str cs)
-    "DARK"  :dark
-    "LIGHT" :light
-    nil))
-
-(defn- watch-os-color-scheme!
-  "On the FX thread, read the OS colour scheme into state and add a listener so the
-  :system theme follows the OS live (see dapr.ui.format/active-theme). Best-effort:
-  on platforms/headless runs where Platform/getPreferences is unavailable it leaves
-  :os-color-scheme nil (the :system theme then falls back to light)."
-  [state-atom]
-  (Platform/runLater
-   (fn []
-     (try
-       (let [prefs   (Platform/getPreferences)
-             record! (fn [cs] (swap! state-atom state/set-os-color-scheme (color-scheme->kw cs)))]
-         (record! (.getColorScheme prefs))
-         (.addListener (.colorSchemeProperty prefs)
-                       (reify ChangeListener
-                         (changed [_ _ _ new-val] (record! new-val)))))
-       (catch Throwable _)))))
-
-(defmethod ig/init-key :dapr/renderer [_ {:keys [state-atom cache refresher]}]
-  (let [handler  (events/make-handler state-atom cache refresher)
-        renderer (fx/create-renderer
-                  :middleware (fx/wrap-map-desc (fn [s] (views/root-view s)))
-                  :opts {:fx.opt/map-event-handler handler})]
-    (fx/mount-renderer state-atom renderer)
-    ;; Follow the OS colour scheme so the :system theme tracks it live.
-    (watch-os-color-scheme! state-atom)
+(defmethod ig/init-key :dapr/server [_ {:keys [state-atom cache refresher] :as opts}]
+  (let [srv (server/start! (assoc opts :on-quit (:on-quit opts (fn [] nil))))]
     ;; Paint any persisted default source/sink from the cache and queue a
     ;; background refresh of those two — the only libraries scanned unasked.
-    (events/start! state-atom cache refresher)
-    {:renderer renderer :state-atom state-atom}))
+    (actions/start! state-atom cache refresher)
+    srv))
 
-(defmethod ig/halt-key! :dapr/renderer [_ {:keys [renderer state-atom]}]
-  (when (and renderer state-atom)
-    (fx/unmount-renderer state-atom renderer)))
+(defmethod ig/halt-key! :dapr/server [_ srv]
+  (server/stop! srv))

@@ -28,7 +28,7 @@
     dapr.db.cache/reconcile-library-tracks!): a partial walk knows nothing about
     absence, so an interrupted refresh leaves the cache a stale superset — safe to
     browse, and the reason a sync against a library that has not completed its
-    refresh asks the user to confirm (see dapr.ui.events)."
+    refresh asks the user to confirm (see dapr.ui.actions)."
   (:require [dapr.db.cache :as cache]
             [dapr.device.coordinator :as coord]
             [dapr.fs.nio :as nio]
