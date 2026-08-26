@@ -29,3 +29,9 @@ replay_pid*.log
 /e2e/playwright-report/
 /e2e/blob-report/
 /e2e/.cache/
+
+# Electron shell (see electron/README.md): installed deps, the jar staged into
+# the packaged app, and electron-builder's output.
+/electron/node_modules/
+/electron/resources/
+/electron/dist/

@@ -1,0 +1,14 @@
+{
+  "name": "dapr-electron",
+  "private": true,
+  "version": "0.0.0",
+  "description": "Electron shell around the Dapr web UI. Not part of the Clojure build; see electron/README.md.",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron .",
+    "test": "node --test \"test/*.test.js\""
+  },
+  "devDependencies": {
+    "electron": "^44.0.0"
+  }
+}
