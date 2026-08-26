@@ -31,12 +31,34 @@ function launchCommand(port, host) {
   const jar = bundledJar() || builtJar();
   if (jar) {
     return {
-      command: process.env.DAPR_JAVA || 'java',
+      command: javaCommand(),
       args: ['--enable-native-access=ALL-UNNAMED', '-jar', jar, ...args],
-      describe: `java -jar ${path.basename(jar)}`,
+      describe: `${javaCommand()} -jar ${path.basename(jar)}`,
     };
   }
   return { command: 'clojure', args: ['-M:run', ...args], describe: 'clojure -M:run' };
+}
+
+/**
+ * Which `java` to run.
+ *
+ * A packaged app carries its own trimmed runtime (see scripts/stage.js), so an
+ * installed Dapr does not require the user to have a JDK — which is what makes
+ * it an application rather than a developer tool. Falling back to whatever is on
+ * PATH is for a checkout, where there is no staged runtime; `DAPR_JAVA` forces a
+ * specific one, which is occasionally useful when debugging against another JDK.
+ */
+function javaCommand() {
+  if (process.env.DAPR_JAVA) return process.env.DAPR_JAVA;
+  return bundledJava() || 'java';
+}
+
+/** The runtime staged into a packaged app, or null when running from a checkout. */
+function bundledJava() {
+  const dir = process.resourcesPath;
+  if (!dir) return null;
+  const exe = path.join(dir, 'runtime', 'bin', process.platform === 'win32' ? 'java.exe' : 'java');
+  return fs.existsSync(exe) ? exe : null;
 }
 
 /** The jar staged into a packaged app, or null when running from a checkout. */

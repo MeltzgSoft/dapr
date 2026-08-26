@@ -6,8 +6,9 @@ holds no state of its own. What the shell adds is the lifecycle a browser tab
 cannot — choosing a port, starting the backend on it, waiting for it to serve,
 and taking it down again on quit.
 
-This is not part of the Clojure build. `clojure -M:run` still works exactly as
-before, and still opens your ordinary browser.
+Running the shell is not part of the Clojure build — `clojure -M:run` still works
+exactly as before, and still opens your ordinary browser. *Packaging* it is:
+staging the jar and the bundled runtime is a `build.clj` task (see Packaging).
 
 ## Running it
 
@@ -101,8 +102,69 @@ handler can run, so the JVM keeps its port and its unsaved cache until it is
 stopped by hand. That is inherent to `SIGKILL` rather than something the shell
 can defend against.
 
-## Not done yet
+## Packaging
 
-No packaging. `electron-builder` (or Forge) would need to stage the uberjar into
-the app's resources and produce per-OS installers — and, unlike the jar, those
-*are* per-OS, which is a release-matrix change worth its own branch.
+```sh
+cd electron && npm ci && cd ..
+clojure -T:build uber
+clojure -T:build package-electron
+```
+
+**Packaging is driven from `build.clj`**, not from npm. `package-electron` stages
+the payload and then runs the locally installed electron-builder over it, so
+there is one entry point and one place that knows the order — npm here is only
+for `npm start` and `npm test`. Staging puts two things in `electron/resources/`,
+which electron-builder copies verbatim to `process.resourcesPath`:
+
+- `dapr.jar` — the uberjar, taken by the exact name the build gave it;
+- `runtime/` — a trimmed JRE built with `jlink` from the JDK running the build.
+
+This lives in `build.clj` because that is where the answers already are. It knows
+the version (`DAPR_VERSION` → git tag → SNAPSHOT) and therefore the jar's exact
+name, so a version mismatch is an error rather than a stale jar packaged
+silently; and `jlink` is a JDK tool, which makes it the JVM build's business. It
+also stamps the shell's `package.json` version — through `npm pkg set`, so the
+rest of that file is left alone — but only when a version was actually asked for,
+so a local packaging run does not leave the tree dirty.
+
+`npm ci` stays a separate step: it is a dependency install, and keeping it out of
+the build task is what lets CI cache it.
+
+**The bundled runtime is the point.** Without it an installer would silently
+require the user to have JDK 25, which is not what installing an application
+should mean. It costs ~73 MB, taking the installers to roughly 190 MB
+(AppImage) and 162 MB (deb).
+
+The linked module set (`jlink-modules` in `build.clj`) is `java.se` plus
+`jdk.unsupported`, `jdk.crypto.ec`, `jdk.zipfs` and `jdk.localedata` —
+deliberately generous rather than derived from `jdeps`. Clojure resolves classes at runtime and the device backends reach
+the OS through JNA, so static analysis under-reports what is actually loaded,
+and the failure mode is a `NoClassDefFoundError` on a user's machine months
+later, on whichever path was not exercised here.
+
+Outputs land in `electron/dist/`: AppImage and deb on Linux, NSIS `.exe` on
+Windows, `.dmg` on macOS. Each is built on its own OS — the staged JRE is native
+code, so one runner cannot produce another platform's installer.
+
+The release workflow (`.github/workflows/release.yml`) does this on a `v#.#.#`
+tag and attaches the results alongside the jar. The version flows from the tag
+through `DAPR_VERSION` into `build.clj`, which is the only place it is derived.
+
+It is set with `npm pkg set` and deliberately *not* with electron-builder's
+`-c.extraMetadata.version`: that flag rewrites `package.json` in place and drops
+everything it does not recognise, including `scripts` and `devDependencies`,
+leaving a checkout that later steps cannot build.
+
+### Known gaps
+
+- **No application icon.** Builds warn and fall back to the default Electron
+  icon, which is worse than a placeholder in a shipped app but better than
+  inventing branding here. Drop a 512×512 `build/icon.png` in to fix it.
+- **Nothing is signed.** The macOS `.dmg` is unsigned and unnotarized, so
+  Gatekeeper blocks it until the user right-click-Opens; the Windows installer
+  will show a SmartScreen warning. Both need real certificates in CI secrets.
+  The macOS entitlements (`build/entitlements.mac.plist`) are already written for
+  the bundled JRE — JIT and library validation — so signing is a credentials
+  problem, not a configuration one.
+- **macOS is Apple silicon only**, because `macos-latest` is arm64. An Intel dmg
+  needs its own matrix leg on `macos-13`.

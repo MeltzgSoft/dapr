@@ -2,13 +2,23 @@ name: Release
 
 # On a v#.#.# tag, run the unit + integration suites (the same reusable
 # workflows, and hence the same windows/mac/linux matrix, as CI) and -- only if
-# both pass -- build the AOT uberjar and attach it to a GitHub release.
+# both pass -- publish two kinds of artifact to a GitHub release:
 #
-# One jar, not one per OS: the UI is a local web app now, so nothing on the
-# classpath ships per-platform natives (the MTP and keystore backends bind to
-# whatever the host provides at runtime). The 3-OS test matrix above still
-# matters -- those backends behave differently per OS -- but the artifact does
-# not.
+#   dapr-<version>.jar   one jar, every OS. The UI is a local web app, so
+#                        nothing on the classpath ships per-platform natives
+#                        (the MTP and keystore backends bind to whatever the host
+#                        provides at runtime). This is the artifact for anyone
+#                        who already has a JDK.
+#
+#   Dapr-<version>.*     desktop installers, one build per OS. These ARE
+#                        per-platform -- an installer is a platform artifact by
+#                        definition -- and each carries its own trimmed JRE
+#                        (jlink; see build.clj's stage-electron) so someone who
+#                        has never installed Java can still run Dapr.
+#
+# So the per-OS matrix below is not a return to the JavaFX situation that was
+# removed: the *jar* is still universal. What is per-OS is the installer wrapped
+# around it and the runtime inside that installer.
 
 on:
   push:
@@ -160,3 +170,93 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           files: target/dapr-*.jar
+
+      # Handed to the package matrix rather than rebuilt there: the jar is the
+      # same bytes on every OS, and rebuilding it three more times would be three
+      # more chances for the installers to disagree with the published jar.
+      - name: Upload jar for the installers
+        uses: actions/upload-artifact@v4
+        with:
+          name: dapr-jar
+          path: target/dapr-*.jar
+          retention-days: 1
+
+  # Desktop installers: the Electron shell (electron/) wrapped around that jar,
+  # with a jlink runtime staged in beside it. One leg per OS, because this is the
+  # step where the artifact genuinely is platform-specific.
+  package:
+    needs: [build]
+    strategy:
+      # One OS failing should not deny the others their installers -- a release
+      # with two of three is worth more than a release with none, and the jar is
+      # already attached by then regardless.
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            artifacts: |
+              electron/dist/*.AppImage
+              electron/dist/*.deb
+          - os: windows-latest
+            artifacts: |
+              electron/dist/*.exe
+          # macos-latest is Apple silicon, so this dmg is arm64. An Intel build
+          # would need its own leg on macos-13: the staged JRE is native code, so
+          # one runner cannot produce both.
+          - os: macos-latest
+            artifacts: |
+              electron/dist/*.dmg
+    runs-on: ${{ matrix.os }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      # For jlink, not for compiling: the runtime staged into the installer is
+      # linked from this JDK, which is why each leg needs one of its own platform.
+      - name: Set up JDK
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '25'
+
+      # Packaging is a build.clj task (`package-electron`), so this leg needs the
+      # Clojure CLI as well as Node: build.clj stages the jar and the linked JRE
+      # -- reading both from the build that produced them rather than guessing --
+      # and then runs electron-builder over the result.
+      - name: Set up Clojure
+        uses: DeLaGuardo/setup-clojure@13.6.1
+        with:
+          cli: latest
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: electron/package-lock.json
+
+      - name: Download the jar
+        uses: actions/download-artifact@v4
+        with:
+          name: dapr-jar
+          path: target
+
+      # Kept as its own step rather than folded into the build task, so
+      # setup-node's cache actually covers it.
+      - name: Install shell dependencies
+        working-directory: electron
+        run: npm ci
+
+      # DAPR_VERSION is the one place the version comes from: build.clj strips
+      # the leading "v", names the jar it looks for with it, and stamps it on the
+      # shell's package.json. package.json carries 0.0.0 in git, so nothing has
+      # to be bumped to cut a release.
+      - name: Build installers
+        env:
+          DAPR_VERSION: ${{ github.ref_name }}
+        run: clojure -T:build package-electron
+
+      - name: Attach installers to release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: ${{ matrix.artifacts }}

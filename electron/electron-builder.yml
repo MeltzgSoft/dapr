@@ -1,0 +1,60 @@
+appId: net.meltzgsoft.dapr
+productName: Dapr
+copyright: Copyright © MeltzgSoft
+
+directories:
+  output: dist
+  buildResources: build
+
+# Only the shell's own code goes inside the asar. Everything the backend needs
+# is staged into resources/ by scripts/stage.js and copied out verbatim below —
+# a jar and a JRE are not things to pack into an archive the JVM cannot read.
+files:
+  - main.js
+  - src/**/*
+  - package.json
+
+# Lands at process.resourcesPath, which is where src/backend.js looks for both:
+# resources/dapr.jar and resources/runtime/bin/java.
+extraResources:
+  - from: resources
+    to: .
+
+# The app is one window over a local server; there is nothing to associate with
+# a file type and no protocol to register.
+linux:
+  category: AudioVideo
+  synopsis: Sync a music library to a device
+  # Without this the desktop entry and the running window are not linked, so the
+  # app shows up as a generic entry in the dock/alt-tab instead of as Dapr. The
+  # name itself is `desktopName` in package.json — it is not a key here.
+  syncDesktopName: true
+  target:
+    - AppImage
+    - deb
+
+win:
+  target:
+    - nsis
+
+nsis:
+  oneClick: false
+  allowToChangeInstallationDirectory: true
+  # Dapr keeps its cache under the user's config directory, so a per-user install
+  # needs no elevation and leaves nothing behind for other accounts.
+  perMachine: false
+
+mac:
+  category: public.app-category.music
+  target:
+    - dmg
+  # The bundled JRE ships its own native libraries, which the hardened runtime
+  # would otherwise refuse to load. Only meaningful once the app is signed;
+  # harmless until then.
+  hardenedRuntime: true
+  entitlements: build/entitlements.mac.plist
+  entitlementsInherit: build/entitlements.mac.plist
+
+# Publishing is the release workflow's job (it attaches these to the GitHub
+# release alongside the jar), not electron-builder's.
+publish: null
