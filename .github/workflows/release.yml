@@ -1,9 +1,14 @@
 name: Release
 
 # On a v#.#.# tag, run the unit + integration suites (the same reusable
-# workflows, and hence the same windows/mac/linux matrix, as CI) and — only if
-# both pass — build an AOT uberjar per OS (each carrying its own JavaFX natives,
-# see build.clj) and attach them all to a single GitHub release.
+# workflows, and hence the same windows/mac/linux matrix, as CI) and -- only if
+# both pass -- build the AOT uberjar and attach it to a GitHub release.
+#
+# One jar, not one per OS: the UI is a local web app now, so nothing on the
+# classpath ships per-platform natives (the MTP and keystore backends bind to
+# whatever the host provides at runtime). The 3-OS test matrix above still
+# matters -- those backends behave differently per OS -- but the artifact does
+# not.
 
 on:
   push:
@@ -118,17 +123,7 @@ jobs:
 
   build:
     needs: [hardware-gate, test, integration]
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - os: ubuntu-latest
-            classifier: linux
-          - os: macos-latest
-            classifier: mac-aarch64
-          - os: windows-latest
-            classifier: win
-    runs-on: ${{ matrix.os }}
+    runs-on: ubuntu-latest
     env:
       DAPR_VERSION: ${{ github.ref_name }}
     steps:
@@ -156,18 +151,10 @@ jobs:
           key: cljdeps-${{ hashFiles('deps.edn') }}
           restore-keys: cljdeps-
 
-      # AOT loads JavaFX classes whose static initializers boot the toolkit; on
-      # headless Linux (GTK) that needs an X display, so run under a virtual
-      # framebuffer. macOS/Windows initialize the toolkit headlessly.
-      - name: Build uberjar (Linux)
-        if: runner.os == 'Linux'
-        run: |
-          sudo apt-get update && sudo apt-get install -y xvfb
-          xvfb-run -a clojure -T:build uber :javafx-classifier ${{ matrix.classifier }}
-
+      # No virtual framebuffer any more: AOT used to boot the JavaFX toolkit,
+      # which needed an X display on Linux. Compiling a web server does not.
       - name: Build uberjar
-        if: runner.os != 'Linux'
-        run: clojure -T:build uber :javafx-classifier ${{ matrix.classifier }}
+        run: clojure -T:build uber
 
       - name: Attach jar to release
         uses: softprops/action-gh-release@v2

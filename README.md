@@ -1,8 +1,13 @@
 # Dapr
 
-A Clojure desktop application for selectively syncing music libraries between
-filesystems. A *library* is a **named, persistent collection of root
-directories**, each addressed by a URI. Dapr supports three URI schemes:
+A Clojure application for selectively syncing music libraries between
+filesystems. It runs as a **local web app**: `clojure -M:run` starts a server
+bound to loopback and opens the UI in your browser, so there is no desktop
+toolkit to install and an Electron (or any other) shell need only point a window
+at the same URL.
+
+A *library* is a **named, persistent collection of root directories**, each
+addressed by a URI. Dapr supports three URI schemes:
 
 - `file://` — local directories, mounted drives, NAS
 - `smb://`  — network shares, via `jcifs-ng`; per-host credentials live in the
@@ -26,11 +31,13 @@ a live device.
    storage). Libraries persist across sessions as EDN; unavailable libraries
    (device unplugged, share unreachable) are greyed out.
 2. **Pick a source and a sink** library.
-3. **Choose tracks** — the source's tracks are listed in a sortable table with
-   an iTunes-style artist/album column browser; those already on the sink are
-   pre-selected. Check/uncheck tracks. A **capacity meter** (free space across
-   the sink's distinct devices, plus space reclaimed by deletions) blocks
-   selecting more than the sink can hold.
+3. **Choose tracks** — the source's tracks are listed in a table you can sort by
+   any column and page through, beside an iTunes-style artist/album column
+   browser: clicking a facet filters the table, and the ✓ beside it checks or
+   unchecks every track under it without narrowing the view. Tracks already on
+   the sink are pre-selected. A **capacity meter** (free space across the sink's
+   distinct devices, plus space reclaimed by deletions) blocks selecting more
+   than the sink can hold.
 4. **Preview & sync** — Dapr computes an **add / delete** plan that makes the
    sink hold exactly the selected tracks, then applies it.
 
@@ -39,9 +46,9 @@ source or sink (or saving an edited library) paints its tracks from the cache
 immediately (however large the library) and starts a fresh scan of it at the
 front of the queue. **Only the libraries you have chosen are ever scanned** —
 nothing goes looking for a player you haven't plugged in. A **one-line summary
-along the window bottom** spins while
+along the page bottom** spins while
 anything is in flight and says what it is; clicking it opens the **activity
-window**, whose collapsible **Jobs** sidebar lists a row per running job — the
+panel**, whose collapsible **Jobs** list shows a row per running job — the
 current sync or preview, plus every library being scanned, paused or failed (with
 its reason), and a count of those still queued — beside the live log. With nothing
 running there is no summary at all. A scan **yields its device** the moment a sync needs it,
@@ -56,7 +63,7 @@ artist, album, genre. Tags come from the file's **own embedded metadata** where
 the backend supports reading it (`file://` via jaudiotagger, `mtp://` via the
 device index or a ranged header read — see [`docs/mtp-tags.md`](docs/mtp-tags.md)),
 falling back to path-derived values otherwise. A **dark/light/system theme** and
-the on-demand **activity window** (running jobs beside the live log) round out
+the on-demand **activity panel** (running jobs beside the live log) round out
 the UI.
 
 Key behaviours (current defaults):
@@ -104,16 +111,25 @@ src/dapr/
     catalogs.clj   I/O   paint state's catalogs from the cache (no device walk)
   refresh.clj      I/O   background refresher: resumable walks into the cache
   sync.clj         I/O   execute-plan! with progress callback + cache follow-up
-  log.clj          I/O   Telemere handlers: rolling log file + live-window buffer
+  log.clj          I/O   Telemere handlers: rolling log file + live-panel buffer
   state.clj        pure  state-transition fns over a single state map
   ui/
-    format.clj     pure  formatting + derived predicates (no JavaFX)
-    views.clj      pure  cljfx view descriptions (data)
-    events.clj     I/O   event handlers: swap! state, copies, persistence
+    format.clj     pure  formatting, derived predicates, track-table rows
+    views.clj      pure  hiccup views (data); one function per page region
+    html.clj       pure  URL building + the htmx attribute patterns
+    digest.clj     pure  per-region change detection, for pushes and re-fetches
+    actions.clj    I/O   the controls' effects: swap! state, copies, persistence
+  web/
+    server.clj     I/O   http-kit server, loopback by default
+    routes.clj     I/O   reitit routes: page, /fragments/*, /actions/*, /events
+    fragments.clj  pure  region -> renderer; the changed/unchanged answer
+    events.clj     I/O   SSE hub: watches state, pushes "region X moved"
+    assets.clj     I/O   htmx served out of its WebJar (never vendored here)
   system.clj       Integrant components: cache, state, log, devices,
-                   coordinator, refresher, renderer
-  main.clj         entry point
-resources/{config.edn, dark.css, light.css}  Integrant system map + themes
+                   coordinator, refresher, server
+  main.clj         entry point (--port / --host / --no-browser)
+resources/config.edn         Integrant system map
+resources/public/dapr.css    the UI's only stylesheet (themes via CSS variables)
 ```
 
 Device discovery/tag reading is loaded through the multimethods above, so the
@@ -121,6 +137,49 @@ generic engine in `dapr.fs.nio` never names a scheme. `dapr.device.tag/tags!`
 is the seam for tags: `file://` reads embedded tags via jaudiotagger, `mtp://`
 via the melt-jfs `audio`/`mtp` NIO attribute views, and any scheme without a
 reader (e.g. `smb://`) falls back to the path-derived default.
+
+### The web UI
+
+The server renders HTML; the browser stores nothing. Every part of the page is a
+**region** with a stable id (`#workspace`, `#track-table`, `#status-bar`, …),
+rendered by a pure function of the application state:
+
+- a control **POSTs to `/actions/...`** and gets back the regions its effect
+  changed — the first swapped into its target, the rest as htmx out-of-band
+  swaps;
+- work that happens on its own — a background scan finding tracks, a sync
+  reporting progress — is **pushed**. `GET /events` is a Server-Sent Events
+  stream carrying one thing: `event: region-table`, meaning "the data behind the
+  track table moved". The region re-fetches itself from `/fragments/<region>`,
+  sending the digest of what it currently shows; unchanged means `204 No
+  Content` and htmx leaves the DOM alone (`dapr.ui.digest`).
+
+What is pushed is a **hint, never markup** (`dapr.web.events`). The table's HTML
+depends on a sort and a page only the client knows, so pushing HTML would force
+the server to track what every client is showing — exactly the per-client state
+this design avoids. Pushing a hint keeps `/fragments/*` the single rendering
+path, so what a browser gets is what the route tests exercise. Regions also keep
+a slow fallback timer, so a stream that never connected degrades to polling
+rather than to a frozen page.
+
+SSE rather than a WebSocket because every message travels one way: user actions
+are ordinary POSTs that answer with their own fragments. The state atom is
+written very often during a scan, so notifications are coalesced — one per
+region that actually changed over a ~100 ms window.
+
+Everything a control needs travels in its URL — the track key a checkbox
+toggles, the table's sort and page, the digest a poll is checking — so there is
+no session, no client-side model, and a reload reproduces the page exactly,
+open settings panel and all. The theme is the one thing a swap cannot reach
+(it hangs off `<html data-theme>`), so changing it answers `HX-Refresh` and the
+page comes back the same.
+
+**htmx is not vendored into this repository.** It resolves as the
+`org.webjars.npm/htmx.org` dependency, so it is version-pinned and cached like
+any other library; `clojure -T:build uber` copies it into the jar, and
+`dapr.web.assets` serves it from `/assets/htmx.js` (the build fails if it is
+missing). The SSE extension ships inside that same WebJar, so it costs no second
+dependency. There is no other JavaScript.
 
 Libraries are persisted at `$XDG_CONFIG_HOME/dapr/libraries.edn` (fallback
 `~/.config/dapr/…`, `%APPDATA%\dapr\…` on Windows). The scan cache and the system
@@ -171,8 +230,8 @@ rebuilt from scratch. Inspect what has run with `applied-ids` / `applied`.
 
 ## Requirements
 
-- JDK 21+ (developed on JDK 25). JavaFX is pulled in explicitly (`org.openjfx`
-  `:linux` classifier) because modern JDKs no longer bundle it.
+- JDK 21+ (developed on JDK 25), and a browser. Nothing platform-specific is
+  bundled: one jar runs everywhere.
 - For `mtp://` support: native MTP access (libmtp on Linux/macOS, WPD on
   Windows), reached via [melt-jfs](https://github.com/meltzg/melt-jfs).
 - For `smb://` support: a secure keystore for per-host credentials — Secret
@@ -181,8 +240,11 @@ rebuilt from scratch. Inspect what has run with `applied-ids` / `applied`.
 ## Usage
 
 ```bash
-# Run the app
+# Run the app (serves http://127.0.0.1:7373/ and opens it in a browser)
 clojure -M:run
+
+# Pick a port, or stay out of the browser's way (what an Electron shell wants)
+clojure -M:run --port 8080 --no-browser     # or DAPR_PORT / DAPR_NO_BROWSER
 
 # Unit + hermetic tests
 clojure -M:test
@@ -190,11 +252,14 @@ clojure -M:test
 # Filesystem integration tests (NIO/Jimfs, SMB/Testcontainers, optional MTP hardware)
 clojure -M:integration
 
+# Browser end-to-end tests (Playwright; starts the app itself) — see e2e/README.md
+cd e2e && npm install && npx playwright install chromium && npm test
+
 # Lint and format
 clojure -M:clj-kondo --lint src dev test test-integration
 clojure -M:cljfmt check        # or: clojure -M:cljfmt fix
 
-# Build a release uberjar for the host OS (target/dapr-<version>-<classifier>.jar)
+# Build the release uberjar (target/dapr-<version>.jar)
 clojure -T:build uber
 ```
 
@@ -212,12 +277,13 @@ everyday CI.
 
 ### Running a release jar
 
-Release uberjars are published per OS by the `Release` workflow on each
-`v#.#.#` tag (each jar carries its own platform's JavaFX natives). Run the jar
-for your OS with native access enabled:
+The `Release` workflow publishes **one uberjar** per `v#.#.#` tag — it runs
+everywhere, since nothing on the classpath ships per-platform natives (the MTP
+and keystore backends bind to whatever the host provides at runtime). Run it
+with native access enabled:
 
 ```bash
-java --enable-native-access=ALL-UNNAMED -jar dapr-<version>-<classifier>.jar
+java --enable-native-access=ALL-UNNAMED -jar dapr-<version>.jar
 ```
 
 The jar's manifest sets `Enable-Native-Access: ALL-UNNAMED`, so JDKs that honour
@@ -229,10 +295,13 @@ REPL-driven development (Integrant):
 ```clojure
 clojure -M:dev
 (require 'dev)
-(dev/go)      ; start the window
+(dev/go)      ; start the server (and open the UI)
 (dev/reset)   ; reload changed code + restart
 (dev/halt)    ; stop
 ```
+
+A reload restarts the server on the same port; the open tab picks the new code
+up on its next poll, or on a refresh.
 
 ## Roadmap
 

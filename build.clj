@@ -1,35 +1,26 @@
 (ns build
   "Release build: AOT-compiled uberjar for `dapr.main`.
 
-  JavaFX ships a per-OS native classifier, so a jar built on one platform will
-  not run on another. deps.edn pins the `:linux` classifier for local dev; here
-  we rewrite it to the target platform's classifier (auto-detected, or passed as
-  `:javafx-classifier`) so each release matrix leg produces a jar carrying its
-  own OS's JavaFX natives.
+  One jar runs on every OS. That is new: the JavaFX UI needed a per-platform
+  natives classifier, so releases used to ship a jar per OS. The web UI has no
+  such dependency — the MTP and keystore backends bind to whatever the host
+  provides at runtime — so there is a single artifact again.
+
+  htmx and its SSE extension are *not* checked into this repository. They
+  resolve as org.webjars.npm dependencies and are copied into the jar here like
+  any other classpath entry; dapr.web.assets finds them at runtime and serves
+  them.
 
   Usage:  clojure -T:build uber
-          clojure -T:build uber :javafx-classifier win :version 1.2.3
+          clojure -T:build uber :version 1.2.3
 
   The version defaults to the DAPR_VERSION env var (the release workflow sets it
   from the git tag), then the current git tag, then a SNAPSHOT placeholder."
-  (:require [clojure.edn :as edn]
-            [clojure.string :as str]
+  (:require [clojure.string :as str]
             [clojure.tools.build.api :as b]))
 
 (def ^:private main 'dapr.main)
 (def ^:private class-dir "target/classes")
-(def ^:private javafx-lib 'org.openjfx/javafx-controls$linux)
-
-(defn- default-classifier
-  "JavaFX classifier for the host OS/arch (matching the openjfx Maven classifiers)."
-  []
-  (let [os   (str/lower-case (System/getProperty "os.name"))
-        arch (str/lower-case (System/getProperty "os.arch"))
-        arm? (or (str/includes? arch "aarch64") (str/includes? arch "arm64"))]
-    (cond
-      (str/includes? os "win") "win"
-      (str/includes? os "mac") (if arm? "mac-aarch64" "mac")
-      :else                    (if arm? "linux-aarch64" "linux"))))
 
 (defn- version
   "Release version: strip the leading `v` from a `v#.#.#` git tag."
@@ -40,23 +31,29 @@
                 "0.0.0-SNAPSHOT")]
     (str/replace-first (str raw) #"^v" "")))
 
-(defn- project-deps
-  "The deps.edn map with the JavaFX classifier swapped to `classifier`."
-  [classifier]
-  (let [raw     (edn/read-string (slurp "deps.edn"))
-        jfx-ver (get-in raw [:deps javafx-lib :mvn/version])
-        target  (symbol (str "org.openjfx/javafx-controls$" classifier))]
-    (-> raw
-        (update :deps dissoc javafx-lib)
-        (assoc-in [:deps target] {:mvn/version jfx-ver}))))
+(def ^:private required-scripts
+  "The WebJar scripts the UI cannot run without (see dapr.web.assets)."
+  [#"^META-INF/resources/webjars/htmx\.org/.*/dist/htmx\.min\.js$"
+   #"^META-INF/resources/webjars/htmx-ext-sse/.*/dist/sse\.min\.js$"])
+
+(defn- scripts-in-jar!
+  "Fail the build if a script did not make it into the uberjar. The UI is unusable
+  without htmx, and degrades silently to polling without the SSE extension — a
+  missing WebJar would otherwise only show up as a dead or sluggish page."
+  [uber-file]
+  (with-open [zip (java.util.zip.ZipFile. (java.io.File. ^String uber-file))]
+    (let [names (mapv #(.getName ^java.util.zip.ZipEntry %) (enumeration-seq (.entries zip)))]
+      (doseq [pattern required-scripts]
+        (when-not (some #(re-find pattern %) names)
+          (throw (ex-info "a required WebJar script is missing from the uberjar — check the org.webjars.npm dependencies in deps.edn"
+                          {:uber-file uber-file :pattern (str pattern)})))))))
 
 (defn uber
-  "Build an AOT uberjar at target/dapr-<version>-<classifier>.jar."
+  "Build an AOT uberjar at target/dapr-<version>.jar."
   [opts]
-  (let [classifier (or (some-> (:javafx-classifier opts) str) (default-classifier))
-        ver        (version opts)
-        basis      (b/create-basis {:project (project-deps classifier)})
-        uber-file  (format "target/dapr-%s-%s.jar" ver classifier)]
+  (let [ver       (version opts)
+        basis     (b/create-basis {:project "deps.edn"})
+        uber-file (format "target/dapr-%s.jar" ver)]
     (b/delete {:path "target"})
     (b/copy-dir {:src-dirs ["src" "resources"] :target-dir class-dir})
     (b/compile-clj {:basis basis :ns-compile [main] :class-dir class-dir})
@@ -67,5 +64,6 @@
              ;; JDK honours this so `java -jar` runs without an explicit
              ;; --enable-native-access flag; still documented for older JDKs.
              :manifest  {"Enable-Native-Access" "ALL-UNNAMED"}})
+    (scripts-in-jar! uber-file)
     (println "Built" uber-file)
     (assoc opts :uber-file uber-file)))
