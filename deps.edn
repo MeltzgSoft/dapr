@@ -42,7 +42,40 @@
                                        org.openjfx/javafx-web]}
   ;; JDK 25 no longer bundles JavaFX, so bring it in explicitly with the linux
   ;; x86_64 classifier. controls -> graphics -> base transitively.
-  org.openjfx/javafx-controls$linux {:mvn/version "27-ea+21"}}
+  org.openjfx/javafx-controls$linux {:mvn/version "27-ea+21"}
+
+  ;; --- web UI ----------------------------------------------------------------
+  ;; The UI is moving to a local web app (see dapr.web.*): the server renders
+  ;; HTML, HTMX swaps fragments of it, and no application state lives in the
+  ;; browser. That also makes the UI embeddable — an Electron shell only has to
+  ;; point a BrowserWindow at the local server.
+  ;;
+  ;; http-kit is the Ring adapter: one small jar, no servlet container and no
+  ;; SLF4J backend to configure, which matters for a desktop app shipped as a
+  ;; single uberjar. reitit-ring routes (the house convention), ring-core
+  ;; supplies the params/keyword middleware and resource responses, and hiccup
+  ;; renders the views — which stay pure data-in/HTML-out, as the cljfx views
+  ;; are.
+  http-kit/http-kit    {:mvn/version "2.8.0"}
+  metosin/reitit-ring  {:mvn/version "0.9.1"}
+  ;; reitit-ring pulls an older ring-core; pin the current one explicitly rather
+  ;; than inherit whatever it happens to depend on.
+  ring/ring-core       {:mvn/version "1.15.5"}
+  hiccup/hiccup        {:mvn/version "2.0.0"}
+  ;; htmx itself, as a WebJar rather than a checked-in copy: the js is a build
+  ;; artifact of someone else's project, so it is resolved like any other
+  ;; dependency and lands in the uberjar at build time. dapr.web.assets finds
+  ;; the scripts on the classpath (each version read from its WebJar's
+  ;; pom.properties) and serves them from /assets/.
+  org.webjars.npm/htmx.org     {:mvn/version "2.0.6"}
+  ;; The SSE extension, for the pushed region notifications. Deliberately NOT the
+  ;; copy bundled at htmx.org's own dist/ext/sse.js: that one is the htmx 1.x
+  ;; extension, left in the npm package for compatibility. It opens the
+  ;; connection under htmx 2 but never fires `hx-trigger="sse:…"`, so every
+  ;; region silently falls back to its timer — which looks exactly like a slow
+  ;; app rather than a broken one. htmx 2 moved extensions to packages of their
+  ;; own; this is that package.
+  org.webjars.npm/htmx-ext-sse {:mvn/version "2.2.3"}}
 
  :aliases
  {;; Run the desktop app.
