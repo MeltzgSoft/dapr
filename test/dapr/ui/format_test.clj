@@ -261,3 +261,76 @@
   (testing "unprobed libraries (absent from the map) are treated as available"
     (is (false? (fmt/library-unavailable? {} 1)))
     (is (false? (fmt/library-unavailable? nil 1)))))
+;; --- track table ------------------------------------------------------------
+
+(defn- track [artist album title size]
+  (let [rel (str artist "/" album "/" title ".mp3")]
+    {:key [artist album title size rel] :artist artist :album album :title title
+     :size size :rel rel :disc-number 1 :track-number 1}))
+
+(def ^:private a1 (track "A" "One" "x" 10))
+(def ^:private b1 (track "B" "Two" "y" 20))
+
+(defn- catalog [& tracks] (into {} (map (juxt :key identity)) tracks))
+
+(defn- rows-of [state]
+  (fmt/track-rows (merge {:capacity {:free 1000} :settings {}} state)))
+
+(deftest track-rows-test
+  (testing "rows the union of both catalogs, flagging what is not on the source"
+    (let [rows (rows-of {:source-catalog (catalog a1)
+                         :sink-catalog   (catalog a1 b1)
+                         :selected       #{(:key a1)}})
+          by-key (into {} (map (juxt :key identity)) rows)]
+      (is (= 2 (count rows)))
+      (is (true? (:in-source? (by-key (:key a1)))))
+      (is (false? (:in-source? (by-key (:key b1)))))))
+
+  (testing "a sink-only track is locked on under :keep, and merely selectable under :delete"
+    (let [locked (first (filter #(= (:key b1) (:key %))
+                                (rows-of {:source-catalog (catalog a1)
+                                          :sink-catalog   (catalog b1)
+                                          :selected       #{}
+                                          :settings       {:sink-only-handling :keep}})))
+          free   (first (filter #(= (:key b1) (:key %))
+                                (rows-of {:source-catalog (catalog a1)
+                                          :sink-catalog   (catalog b1)
+                                          :selected       #{}
+                                          :settings       {:sink-only-handling :delete}})))]
+      (is (and (:on? locked) (:disabled? locked)))
+      (is (and (not (:on? free)) (not (:disabled? free))))))
+
+  (testing "a track that would not fit the sink is disabled rather than merely refused"
+    (let [[row] (rows-of {:source-catalog (catalog a1)
+                          :sink-catalog   {}
+                          :selected       #{}
+                          :capacity       {:free 5}})]
+      (is (true? (:disabled? row)))))
+
+  (testing "only tracks matching the column-browser filter are rowed"
+    (is (= [(:key b1)]
+           (mapv :key (rows-of {:source-catalog (catalog a1 b1)
+                                :selected       #{}
+                                :filter         {:artist "B"}}))))))
+
+(deftest sort-rows-test
+  (let [rows [{:key ["" "" "" 0 "c"] :title "b" :disc-number 1 :track-number 2 :album "z" :artist "z"}
+              {:key ["" "" "" 0 "a"] :title "C" :disc-number 1 :track-number 1 :album "z" :artist "z"}
+              {:key ["" "" "" 0 "b"] :title "a" :disc-number 2 :track-number 1 :album "z" :artist "z"}]]
+    (testing "with no column, disc then track order"
+      (is (= ["C" "b" "a"] (mapv :title (fmt/sort-rows rows nil :asc)))))
+    (testing "a column sorts case-insensitively by that field alone"
+      (is (= ["a" "b" "C"] (mapv :title (fmt/sort-rows rows :title :asc))))
+      (is (= ["C" "b" "a"] (mapv :title (fmt/sort-rows rows :title :desc)))))))
+
+(deftest paging-test
+  (testing "an empty table still has one page"
+    (is (= 1 (fmt/page-count 0 10))))
+  (testing "a partial last page counts"
+    (is (= 3 (fmt/page-count 21 10))))
+  (testing "pages slice in order"
+    (is (= [0 1 2] (fmt/page-rows (vec (range 10)) 0 3)))
+    (is (= [9] (fmt/page-rows (vec (range 10)) 3 3))))
+  (testing "a page past the end clamps to the last one, rather than showing nothing"
+    (is (= [9] (fmt/page-rows (vec (range 10)) 99 3)))
+    (is (= [0 1 2] (fmt/page-rows (vec (range 10)) -1 3)))))

@@ -1,8 +1,10 @@
 (ns dapr.ui.format
-  "Pure presentation helpers for the UI: human-readable formatting and derived
-  predicates over the application state. No side effects and no JavaFX, so this
-  logic is unit-testable in isolation (dapr.ui.views handles the rendering)."
-  (:require [clojure.string :as str]))
+  "Pure presentation helpers for the UI: human-readable formatting, the derived
+  predicates the controls enable themselves from, and the track table's row
+  projection. No side effects and no JavaFX, so this logic is unit-testable in
+  isolation (dapr.ui.views handles the rendering)."
+  (:require [clojure.string :as str]
+            [dapr.domain.capacity :as cap]))
 
 (defn human-bytes
   "Format a byte count as a short human-readable string."
@@ -135,7 +137,7 @@
       1 (first quoted)
       (str (str/join ", " (butlast quoted)) " and " (last quoted)))))
 
-(defn- library-name
+(defn library-name
   "Display name of library `id` in `libraries`, or a placeholder if it is gone."
   [libraries id]
   (or (:name (first (filter #(= (:id %) id) libraries))) "?"))
@@ -294,3 +296,84 @@
                          (get-in plan [:summary :move] 0)
                          (get-in plan [:summary :delete] 0)
                          (get-in plan [:summary :add-to-source] 0))))))
+
+;; --- track table -------------------------------------------------------------
+
+(defn track-rows
+  "Resolve the union of the source and sink catalogs into a vector of row maps for
+  the track table, one per track: {:key :disc-number :track-number :title
+  :duration-millis :artist :album :genre :size :sink-rel :in-source? :on?
+  :disabled?}. Capacity is checked in constant time per row against the selection's
+  remaining free bytes (computed once from :capacity), so this stays O(n) even for
+  libraries of many thousands of tracks — see dapr.domain.capacity/row-fits?. Only
+  tracks matching the column-browser filter are rowed (see filter-catalog);
+  selection/capacity still span the whole catalog.
+
+  Tracks present on the sink but absent from the source are flagged
+  `:in-source? false` (the view colours them). Under :keep / :add-to-source
+  handling they are retained regardless of selection, so their checkbox is locked
+  on (`:on? true`, `:disabled? true`); under :delete the checkbox spares them from
+  deletion when ticked."
+  [{:keys [source-catalog sink-catalog selected capacity filter settings]}]
+  (let [free     (:free capacity)
+        handling (get settings :sink-only-handling :keep)
+        locked?  (contains? #{:keep :add-to-source} handling)]
+    (->> (vals (filter-catalog (merge sink-catalog source-catalog) filter))
+         (mapv (fn [t]
+                 (let [k          (:key t)
+                       in-source? (contains? source-catalog k)
+                       on?        (contains? selected k)]
+                   {:key             k
+                    :disc-number     (:disc-number t)
+                    :track-number    (:track-number t)
+                    :title           (:title t)
+                    :duration-millis (:duration-millis t)
+                    :artist          (:artist t)
+                    :album           (:album t)
+                    :genre           (:genre t)
+                    :size            (:size t)
+                    :sink-rel        (:rel (get sink-catalog k))
+                    :in-source?      in-source?
+                    :on?             (if (and (not in-source?) locked?) true on?)
+                    :disabled?       (cond
+                                       (not in-source?) locked?
+                                       on?              false
+                                       :else            (not (cap/row-fits?
+                                                              k (:size t) selected sink-catalog free)))}))))))
+
+(defn- default-order
+  "Sort key for the table's natural order: disc, track, album, artist, then the
+  track's relative path as a tiebreak (it is the last element of :key)."
+  [row]
+  [(:disc-number row) (:track-number row)
+   (sort-key (:album row)) (sort-key (:artist row)) (peek (:key row))])
+
+(defn sort-rows
+  "Order `rows` for display. With no `col`, the natural disc/track/album/artist
+  order; with one, by that field alone using compare-field (case-insensitive, nil
+  first), reversed for `:desc`. The natural order is the tiebreak in neither case —
+  a single-field sort is what a clicked header means, and Clojure's sort is stable,
+  so equal values keep the order they arrived in."
+  [rows col dir]
+  (if col
+    (cond-> (sort-by col compare-field rows)
+      (= :desc dir) reverse
+      :always vec)
+    (vec (sort-by default-order rows))))
+
+(defn page-count
+  "How many pages of `page-size` rows `total` rows make, at least 1 (an empty
+  table still has a first page to show)."
+  [total page-size]
+  (max 1 (long (Math/ceil (/ (double (max 0 total)) (max 1 page-size))))))
+
+(defn page-rows
+  "The `page`-th (0-based) slice of `page-size` rows from `rows`, clamped into
+  range so a page that has shrunk out from under the client shows its last page
+  rather than nothing."
+  [rows page page-size]
+  (let [size  (max 1 page-size)
+        pages (page-count (count rows) size)
+        page  (-> (or page 0) (max 0) (min (dec pages)))
+        start (* page size)]
+    (subvec (vec rows) start (min (count rows) (+ start size)))))

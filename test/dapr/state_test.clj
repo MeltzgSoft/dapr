@@ -135,6 +135,22 @@
       (testing "no track fits with no sink, so selecting one is refused"
         (is (= #{} (:selected (state/toggle-track s ["a" 10]))))))))
 
+(deftest catalog-version-test
+  (testing "every repaint of the catalogs moves the version, so a view rendered
+            earlier can tell that a background scan found something"
+    (let [cat {["a" 10] {:size 10 :key ["a" 10]}}
+          s0  state/initial-state
+          s1  (state/set-catalogs s0 cat {} 100)
+          s2  (state/update-catalogs s1 cat {} 100)]
+      (is (= 0 (:catalog-version s0)))
+      (is (= 1 (:catalog-version s1)))
+      (is (= 2 (:catalog-version s2)))))
+  (testing "nothing else touches it — a selection is the user's own doing and the
+            view already has the answer"
+    (let [s (state/set-catalogs state/initial-state {["a" 10] {:size 10 :key ["a" 10]}} {} 100)]
+      (is (= (:catalog-version s)
+             (:catalog-version (state/toggle-track s ["a" 10])))))))
+
 (deftest toggle-track-test
   (let [source {["a" 10] {:size 10 :key ["a" 10]}
                 ["big" 100] {:size 100 :key ["big" 100]}}

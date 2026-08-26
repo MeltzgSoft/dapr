@@ -23,6 +23,11 @@
    :filter-search  {:artist "" :album ""}   ; per-column search text narrowing the facet lists
    :free-bytes     0      ; usable bytes across the sink's distinct devices
    :capacity       {:used 0 :budget 0 :free 0}
+   ;; Bumped every time the catalogs are repainted from the cache (see
+   ;; set-catalogs/update-catalogs). A view rendered against an earlier version
+   ;; can tell it is out of date, which is how a background scan's findings
+   ;; reach a display that holds no state of its own.
+   :catalog-version 0
    :plan           nil    ; {:actions [...] :summary {...}}
    :settings-open? false  ; whether the library-management modal is showing
    :editor         nil    ; library being added/edited, or nil
@@ -148,11 +153,18 @@
   [state col text]
   (assoc-in state [:filter-search col] text))
 
+(defn- bump-catalog-version
+  "Mark the catalogs as changed, so a view rendered against the previous ones
+  learns it is out of date (see :catalog-version in initial-state)."
+  [state]
+  (update state :catalog-version (fnil inc 0)))
+
 (defn set-catalogs
   "Record freshly scanned catalogs and free space, pre-select the tracks already
   on the sink, and recompute capacity."
   [state source-catalog sink-catalog free-bytes]
   (-> state
+      (bump-catalog-version)
       (assoc :source-catalog source-catalog
              :sink-catalog sink-catalog
              :free-bytes free-bytes
@@ -166,6 +178,7 @@
   set-catalogs' pre-selection would silently discard what the user had ticked."
   [state source-catalog sink-catalog free-bytes]
   (-> state
+      (bump-catalog-version)
       (assoc :source-catalog source-catalog
              :sink-catalog sink-catalog
              :free-bytes free-bytes)
