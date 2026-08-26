@@ -1,0 +1,15 @@
+{
+  "name": "dapr-e2e",
+  "private": true,
+  "description": "Browser end-to-end tests for the Dapr web UI. Not part of the Clojure build; see e2e/README.md.",
+  "scripts": {
+    "pretest": "node -e \"require('fs').rmSync('.tmp',{recursive:true,force:true})\"",
+    "test": "playwright test",
+    "test:headed": "playwright test --headed",
+    "test:ui": "playwright test --ui",
+    "report": "playwright show-report"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.62.1"
+  }
+}

@@ -108,6 +108,84 @@ jobs:
         shell: pwsh
         run: clojure -M:test
 
+  # Browser end-to-end tests (e2e/, see its README). They start the app
+  # themselves and drive it in Chromium, which is the only way to exercise the
+  # parts of the UI that are not Clojure: that htmx is wired up, that a pushed
+  # notification actually makes a region re-fetch itself (dapr.web.events), and
+  # that a sync started from the page puts real files on disk.
+  #
+  # The general `linux` runner is DOCKERIZED -- unlike linux-usb/windows/
+  # windows-usb, which are VMs. So this job is root in a container of its own
+  # and installs what it needs per run, rather than depending on a bring-up step
+  # the way the device jobs below depend on their SMB shares: a fresh container
+  # would not have kept one anyway. It also means the port the app binds (7374)
+  # is namespaced to this job, so it cannot collide with anything else.
+  #
+  # This lives here rather than in a workflow of its own for the reason the file
+  # header gives: a second file would duplicate the triggers.
+  e2e:
+    runs-on: linux
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up JDK 25
+        uses: https://github.com/actions/setup-java@v5
+        with:
+          java-version: '25'
+          distribution: temurin
+
+      - name: Install Clojure CLI
+        # See the test job: the official installer, never setup-clojure.
+        run: |
+          curl -sLO https://download.clojure.org/install/linux-install-1.12.4.1618.sh
+          chmod +x linux-install-1.12.4.1618.sh
+          ./linux-install-1.12.4.1618.sh
+
+      - name: Set up Node
+        # If this ever 401s the way setup-clojure did, it is resolving versions
+        # through api.github.com with the Forgejo token -- replace it with a
+        # direct download from nodejs.org rather than debugging the token.
+        uses: https://github.com/actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Cache the Playwright browser
+        # Saves the ~115 MB browser download per run. The apt packages above are
+        # not cached: they are cheap next to the browser, and caching a package
+        # set across image changes is how you get a container that almost works.
+        uses: https://github.com/actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ hashFiles('e2e/package-lock.json') }}
+          restore-keys: playwright-
+
+      - name: Install e2e dependencies
+        working-directory: e2e
+        run: npm ci
+
+      - name: Install Chromium
+        working-directory: e2e
+        # --with-deps apt-gets Chromium's shared libraries, which is fine and
+        # necessary in an ephemeral container. It assumes a Debian/Ubuntu base
+        # image; if the runner's default image ever stops being one, pin
+        # `container: mcr.microsoft.com/playwright:v<version>-noble` on this job
+        # instead -- that image ships the browsers and their libraries already.
+        run: npx playwright install --with-deps chromium
+
+      - name: Run the browser tests
+        working-directory: e2e
+        run: npm test
+
+      - name: Keep the report and traces of a failure
+        if: failure()
+        uses: https://github.com/actions/upload-artifact@v4
+        with:
+          name: playwright-report
+          path: |
+            e2e/playwright-report/
+            e2e/test-results/
+          retention-days: 7
+
   # Both integration jobs run on the DEVICE runners (FR-4.2, FR-9.9/9.10):
   # linux-usb/windows-usb select the executor that can receive the USB
   # controller, and device-mtp is the capability label, because these tests

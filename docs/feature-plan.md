@@ -39,6 +39,73 @@ all 8 phases, unit + integration green, pending a manual smoke on real hardware.
 **sketched** in §11 and deliberately not started: it should follow feature 10's
 hardware smoke, since it changes the same device-arbitration primitives.
 
+**Web UI refactor — `feat/web-ui`** replaces the cljfx/JavaFX front end with a
+server-rendered HTMX UI (`dapr.web.*` + hiccup views), keeping the feature set
+above intact. The engine below `dapr.state` is untouched: the refresher,
+coordinator, cache, planner and sync are the same code, and the UI layer went
+from "cljfx view data + an event handler on the FX thread" to "hiccup fragments
++ `/actions` and `/fragments` routes". Notes worth keeping:
+
+- **Regions, not a re-render.** cljfx re-rendered the whole view on every state
+  change; a browser cannot. Each region digests exactly what it renders from
+  (`dapr.ui.digest`) and a poll carrying a matching digest gets `204`, so
+  background scan progress reaches the page without churning the table.
+- **No client state.** Sort, page, the toggled track key and the poll digest all
+  travel in URLs; the filter, editor, browser and panel visibility stay in the
+  application state atom, so a reload reproduces the page — which is also why a
+  theme change can simply answer `HX-Refresh`.
+- **What JavaFX plumbing disappeared:** the OS colour-scheme listener (CSS
+  `prefers-color-scheme` does it), the log ListView's scrollbar
+  follow/freeze listeners (a `column-reverse` flex box does it), the
+  `TitledPane` expanded-property feedback loop (`<details>` does it), and the
+  per-OS JavaFX classifier in `build.clj` (one jar now).
+- **What changed shape in the UI:** the track table pages (200 rows) instead of
+  virtualizing; the facet double-click became an explicit ✓ button beside each
+  facet; the native `DirectoryChooser` for the log folder became Dapr's own
+  folder browser, opened with `:purpose :log-dir`.
+- **htmx** is a WebJar dependency, never checked in; `build.clj` fails the build
+  if `htmx.min.js` is not in the uberjar.
+
+**Pushed updates instead of polling.** The first cut had every region re-fetch
+itself on a 1–3s timer. That converged, but it woke the JVM a few times a second
+forever, and lagged the live log by up to a second. `dapr.web.events` replaces
+the timer with a Server-Sent Events stream at `GET /events`:
+
+- **A hint, not markup.** The push is `event: region-table` with no body; the
+  element re-fetches `/fragments/table` with its own digest, sort and page. That
+  is what keeps per-client state out of the server — the table's HTML depends on
+  a sort only the client knows — and keeps `/fragments/*` the one rendering path
+  the route tests cover.
+- **SSE, not a WebSocket.** Every message travels server→client; actions are
+  ordinary POSTs answering with their own fragments. A socket would add a return
+  channel nothing writes to, plus ping/reconnect handling `EventSource` does for
+  free.
+- **Coalescing is not optional.** The state atom is written every 64 entries
+  during a scan; a notification per write would be noisier than the polling it
+  replaced. The publisher is woken by a one-slot queue (a doorbell, not a
+  backlog), settles 100 ms, then digests once and sends one notification per
+  region that actually moved.
+- **The timer stays as a fallback** at 15s (`dapr.ui.html/fallback-seconds`), so
+  a stream that never connected degrades to the old behaviour rather than to a
+  frozen page.
+- The SSE extension is a WebJar of its own (`org.webjars.npm/htmx-ext-sse`),
+  *not* the `dist/ext/sse.js` bundled inside htmx.org: that copy is the htmx 1.x
+  extension, which opens the stream under htmx 2 but never fires
+  `hx-trigger="sse:…"` — leaving every region on its fallback timer, which looks
+  like a slow app rather than a broken one.
+
+**Browser end-to-end tests** live in `e2e/` (Playwright, `@playwright/test`) and
+run on the forge as the `e2e` job in `.forgejo/workflows/tests.yml`. They start
+the app themselves against a scratch `$XDG_CONFIG_HOME`, so they never touch a
+developer's real libraries. They exist for what the Clojure suite cannot see:
+htmx actually being wired, a *pushed* notification actually causing a re-fetch
+(`07-push.spec.ts` issues a request outside the page, so only the push can
+explain the update), and a sync started from the page landing real files on
+disk. The `linux` runner is dockerized (unlike the `linux-usb`/`windows`/
+`windows-usb` VMs), so the job is root in a fresh container and installs
+Chromium and its libraries per run — no bring-up step, which a fresh container
+would not have kept anyway.
+
 ---
 
 ## Decisions locked in
