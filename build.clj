@@ -34,7 +34,8 @@
 (def ^:private required-scripts
   "The WebJar scripts the UI cannot run without (see dapr.web.assets)."
   [#"^META-INF/resources/webjars/htmx\.org/.*/dist/htmx\.min\.js$"
-   #"^META-INF/resources/webjars/htmx-ext-sse/.*/dist/sse\.min\.js$"])
+   #"^META-INF/resources/webjars/htmx-ext-sse/.*/dist/sse\.min\.js$"
+   #"^META-INF/resources/webjars/idiomorph/.*/dist/idiomorph-ext\.min\.js$"])
 
 (defn- scripts-in-jar!
   "Fail the build if a script did not make it into the uberjar. The UI is unusable

@@ -28,7 +28,9 @@
     (is (= "/fragments/status?d=7" (:hx-get attrs)))
     (testing "the server's notification is the trigger; the timer is the safety net"
       (is (= "sse:region-status, every 15s" (:hx-trigger attrs))))
-    (is (= "outerHTML" (:hx-swap attrs)))
+    (testing "a morph swap, so a re-render keeps what the DOM owns — a running
+              spinner animation, a scroll position — rather than replacing it"
+      (is (= "morph:outerHTML" (:hx-swap attrs))))
     (testing "the fallback interval is configured, not compiled in"
       (is (= "sse:region-status, every 3s"
              (:hx-trigger (html/poll (state/set-ui state/initial-state {:fallback-seconds 3})

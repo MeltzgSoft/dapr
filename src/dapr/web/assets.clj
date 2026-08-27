@@ -21,7 +21,12 @@
   opens the event stream but never fires the `sse:` triggers, leaving every
   region to its fallback timer."
   {"htmx.js"     {:webjar "htmx.org" :path "dist/htmx.min.js"}
-   "htmx-sse.js" {:webjar "htmx-ext-sse" :path "dist/sse.min.js"}})
+   "htmx-sse.js" {:webjar "htmx-ext-sse" :path "dist/sse.min.js"}
+   ;; The -ext build: idiomorph plus the htmx extension that registers `morph`
+   ;; as a swap style. The bare idiomorph.min.js is the library alone and
+   ;; registers nothing, which would leave every morph swap silently doing
+   ;; nothing at all.
+   "idiomorph.js" {:webjar "idiomorph" :path "dist/idiomorph-ext.min.js"}})
 
 (defn- webjar-version
   "Version of WebJar `artifact` on the classpath, or nil when it isn't there."
@@ -58,6 +63,11 @@
   "URL the page should load the htmx SSE extension from."
   []
   (get-in @assets ["htmx-sse.js" :src]))
+
+(defn idiomorph-src
+  "URL of the idiomorph htmx extension, versioned for caching."
+  []
+  (get-in @assets ["idiomorph.js" :src]))
 
 (defn handler
   "Serve one of the WebJar scripts. Immutable: the URL carries the version, so a

@@ -343,10 +343,18 @@
 (defn log-lines
   "The live log. Rendered newest-first into a column-reverse box, which pins the
   view to the newest line and holds the reader's place when they scroll up — with
-  no scripting, where JavaFX needed a scrollbar listener to tell the two apart."
+  no scripting, where JavaFX needed a scrollbar listener to tell the two apart.
+
+  Each line is its own element, which is load-bearing twice over. `column-reverse`
+  orders *flex items*, so a single text node of joined lines gave it nothing to
+  reverse: the newest line ended up at the top of a block pinned to the bottom,
+  i.e. off screen, and the reader saw the oldest of the retained lines. And a
+  morph swap can only preserve what it can match — per-line elements let it
+  prepend one line and leave the other 499 untouched."
   [state]
   [:pre#log-lines.log (html/poll state :log (digest/digest state nil :log))
-   (str/join "\n" (reverse (:log state)))])
+   (for [line (reverse (:log state))]
+     [:span.log-line line])])
 
 (defn activity
   "The activity panel: running jobs beside the live log. Opened from the View menu
@@ -587,7 +595,7 @@
 (defn page
   "The whole document. The script URLs come from dapr.web.assets rather than being
   hard-coded, so the view stays free of classpath concerns."
-  [state view {:keys [htmx-src htmx-sse-src]}]
+  [state view {:keys [htmx-src htmx-sse-src idiomorph-src]}]
   [:html {:lang "en" :data-theme (fmt/theme-attr (get-in state [:settings :theme] :system))}
    [:head
     [:meta {:charset "utf-8"}]
@@ -595,10 +603,15 @@
     [:title "Dapr — music library sync"]
     [:link {:rel "stylesheet" :href "/dapr.css"}]
     [:script {:src htmx-src :defer true}]
-    [:script {:src htmx-sse-src :defer true}]]
+    [:script {:src htmx-sse-src :defer true}]
+    [:script {:src idiomorph-src :defer true}]]
    ;; One event stream for the page. The server pushes "region X moved" and the
    ;; regions below re-fetch themselves; see dapr.web.events.
-   [:body {:hx-ext "sse" :sse-connect "/events"}
+   ;; `morph` is on the body so every region inherits it: the live ones are
+   ;; re-rendered as often as once a second, and replacing them would discard
+   ;; what the DOM owns rather than the server — a running CSS animation, a
+   ;; scroll position, a focused input.
+   [:body {:hx-ext "sse,morph" :sse-connect "/events"}
     [:div.app
      (topbar state)
      (workspace state view)

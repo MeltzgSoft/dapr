@@ -558,6 +558,14 @@ fieldset > legend { padding: 0 4px; font-weight: 600; font-size: 13px; }
   overflow-wrap: anywhere;
 }
 
+/* One flex item per line, which is what makes column-reverse mean anything: as
+ * a single text node the whole log was one anonymous item, so there was nothing
+ * to reverse and the newest line sat at the top of a bottom-pinned box, off
+ * screen. `flex: none` stops a long wrapped line from being squeezed. */
+.log-line {
+  flex: none;
+}
+
 /* Overlay/drawer content is server-rendered; hide it before htmx settles so a
  * fragment swap never flashes an unstyled block. */
 .htmx-swapping { opacity: 0.6; }

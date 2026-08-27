@@ -49,7 +49,13 @@
   {:hx-get     (fragment-url region digest params)
    :hx-trigger (format "sse:region-%s, every %ds"
                        (name region) (state/fallback-seconds state))
-   :hx-swap    "outerHTML"})
+   ;; morph, not outerHTML. These regions re-render as often as once a second
+   ;; while a scan runs, and *replacing* the element throws away the state the
+   ;; DOM owns rather than the server: a CSS animation restarts from frame 0 (the
+   ;; status spinner never completed a turn — measured at under 220ms of its
+   ;; 700ms cycle), and a scroll position resets to the top. Morphing patches the
+   ;; nodes that actually changed and leaves the rest — and their state — alone.
+   :hx-swap    "morph:outerHTML"})
 
 (defn classes
   "Space-joined class attribute from `xs`, dropping nils and falses — so classes
