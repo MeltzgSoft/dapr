@@ -17,11 +17,17 @@ npm install
 npm start
 ```
 
+The shell starts the backend itself, so **don't run `clojure -M:run` alongside
+it**: that leaves two servers with two independent states over one cache DB, and
+whichever exits last wins the snapshot. Quit the browser-based one first.
+
 `npm start` looks for a jar to run, in this order:
 
 1. `dapr.jar` beside the Electron resources (a packaged app),
 2. the newest jar in `target/` (`clojure -T:build uber` puts one there),
 3. failing both, `clojure -M:run` from source — slower to boot, same app.
+
+So `clojure -T:build uber` first if you want a fast start.
 
 ## The port
 

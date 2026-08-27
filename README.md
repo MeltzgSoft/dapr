@@ -232,6 +232,8 @@ rebuilt from scratch. Inspect what has run with `applied-ids` / `applied`.
 
 - JDK 21+ (developed on JDK 25), and a browser. Nothing platform-specific is
   bundled: one jar runs everywhere.
+- Node, only for the optional desktop shell (`electron/`) and the browser e2e
+  tests. CI uses Node 22; developed on 24. Neither is needed to run Dapr itself.
 - For `mtp://` support: native MTP access (libmtp on Linux/macOS, WPD on
   Windows), reached via [melt-jfs](https://github.com/meltzg/melt-jfs).
 - For `smb://` support: a secure keystore for per-host credentials — Secret
@@ -245,6 +247,9 @@ clojure -M:run
 
 # Pick a port, or stay out of the browser's way (what an Electron shell wants)
 clojure -M:run --port 8080 --no-browser     # or DAPR_PORT / DAPR_NO_BROWSER
+
+# Run it as a desktop window instead of a browser tab (see "The desktop shell")
+cd electron && npm install && npm start
 
 # Unit + hermetic tests
 clojure -M:test
@@ -262,6 +267,18 @@ clojure -M:cljfmt check        # or: clojure -M:cljfmt fix
 # Build the release uberjar (target/dapr-<version>.jar)
 clojure -T:build uber
 ```
+
+Each component documents itself, so these are the places to look rather than
+here:
+
+- **Desktop shell** ([`electron/`](electron/README.md)) — [running
+  it](electron/README.md#running-it), [how it picks a
+  port](electron/README.md#the-port), [what it does on
+  quit](electron/README.md#lifecycle), and its [security
+  posture](electron/README.md#security-posture).
+- **Browser end-to-end tests** ([`e2e/`](e2e/README.md)) — how to run them, [what
+  they run against](e2e/README.md#what-it-runs-against), and the
+  [conventions](e2e/README.md#conventions) the specs follow.
 
 ### Where development happens
 
