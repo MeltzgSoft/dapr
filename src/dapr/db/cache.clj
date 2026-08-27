@@ -312,6 +312,27 @@
   that recursion bounded (~2x this, for the track + its presence)."
   256)
 
+(defonce ^:private write-lock
+  ;; Serializes the read-modify-write cache updates below across the process.
+  ;;
+  ;; d/transact! is atomic, so nothing here can corrupt the DB — but several of
+  ;; these writes *decide what to transact* from a DB value they read first, and
+  ;; the entities they decide over (tracks) are shared between libraries. Two
+  ;; refresh workers scanning different libraries that hold the same file can both
+  ;; read :track/tag-source before either writes, so both see "no embedded tags
+  ;; yet" and the path-derived one wins the race — overwriting good tags until the
+  ;; next full scan (see downgrade?). Holding this lock makes each diff atomic with
+  ;; its own transaction, which is what the guard assumes.
+  ;;
+  ;; The window predates the worker pool: the refresher and a sync's
+  ;; apply-plan-to-cache! could already interleave. Parallelism only widens it.
+  ;;
+  ;; Free, in practice: these are in-memory diffs measured against device walks
+  ;; that block on native round trips, so the workers contend for microseconds.
+  ;; Reentrant (a JVM monitor), so replace-library-tracks! can hold it across both
+  ;; halves and have them stay one unit.
+  (Object.))
+
 (defn- track-sources
   "Map of [rel size] -> :track/tag-source for the tracks identified by `ks`. Looks
   across libraries (the track entity is shared) so a path-derived scan of one
@@ -369,21 +390,25 @@
   ([conn lib-eid tracks]
    (upsert-library-tracks! conn lib-eid tracks (library-catalog (d/db conn) lib-eid)))
   ([conn lib-eid tracks cached]
-   (let [src-of  (track-sources (d/db conn) (map (juxt :rel :size) tracks))
-         upserts (filter (fn [t]
-                           ;; `cached` is keyed by the domain track key (tags+size
-                           ;; +rel), tag sources by the physical file [rel size] —
-                           ;; see library-catalog and dapr.domain.library/track-key.
-                           (needs-upsert? (cached (lib/track-key t))
-                                          (src-of [(:rel t) (:size t)]) t))
-                         tracks)]
-     (doseq [batch (partition-all tx-batch-size upserts)]
-       (d/transact! conn (into []
-                               (mapcat (fn [t]
-                                         (track-tx lib-eid
-                                                   (not (downgrade? (src-of [(:rel t) (:size t)]) t))
-                                                   t)))
-                               batch))))))
+   ;; src-of is read and acted on under one lock: the downgrade guard is only
+   ;; sound if no other writer lands between the read and these transactions (see
+   ;; write-lock).
+   (locking write-lock
+     (let [src-of  (track-sources (d/db conn) (map (juxt :rel :size) tracks))
+           upserts (filter (fn [t]
+                             ;; `cached` is keyed by the domain track key (tags+size
+                             ;; +rel), tag sources by the physical file [rel size] —
+                             ;; see library-catalog and dapr.domain.library/track-key.
+                             (needs-upsert? (cached (lib/track-key t))
+                                            (src-of [(:rel t) (:size t)]) t))
+                           tracks)]
+       (doseq [batch (partition-all tx-batch-size upserts)]
+         (d/transact! conn (into []
+                                 (mapcat (fn [t]
+                                           (track-tx lib-eid
+                                                     (not (downgrade? (src-of [(:rel t) (:size t)]) t))
+                                                     t)))
+                                 batch)))))))
 
 (defn reconcile-library-tracks!
   "Drop library `lib-eid`'s presences for tracks not in `seen` — the tracks a
@@ -399,16 +424,20 @@
   that ran to completion has a `seen` set that is authoritative about absence (see
   dapr.refresh)."
   [conn lib-eid seen]
-  (let [existing (d/q '[:find ?p ?rel ?size :in $ ?lib
-                        :where [?p :presence/library ?lib]
-                        [?p :presence/track ?t]
-                        [?t :track/rel ?rel] [?t :track/size ?size]]
-                      (d/db conn) lib-eid)
-        retract  (vec (for [[p rel size] existing
-                            :when (not (contains? seen [rel size]))]
-                        [:db/retractEntity p]))]
-    (when (seq retract)
-      (d/transact! conn retract))))
+  ;; Also read-modify-write: a presence added between the query and the retraction
+  ;; (a sync of this library landing mid-reconcile) would be retracted as "gone"
+  ;; despite having just been written. See write-lock.
+  (locking write-lock
+    (let [existing (d/q '[:find ?p ?rel ?size :in $ ?lib
+                          :where [?p :presence/library ?lib]
+                          [?p :presence/track ?t]
+                          [?t :track/rel ?rel] [?t :track/size ?size]]
+                        (d/db conn) lib-eid)
+          retract  (vec (for [[p rel size] existing
+                              :when (not (contains? seen [rel size]))]
+                          [:db/retractEntity p]))]
+      (when (seq retract)
+        (d/transact! conn retract)))))
 
 (defn replace-library-tracks!
   "Set library `lib-eid`'s presences to exactly `tracks` — the whole-scan form used
@@ -417,23 +446,30 @@
   ([conn lib-eid tracks]
    (replace-library-tracks! conn lib-eid tracks (library-catalog (d/db conn) lib-eid)))
   ([conn lib-eid tracks cached]
-   (reconcile-library-tracks! conn lib-eid (set (map (juxt :rel :size) tracks)))
-   (upsert-library-tracks! conn lib-eid tracks cached)))
+   ;; Held across both halves so a concurrent writer cannot observe (or write
+   ;; into) the gap where the library has been pruned but not yet refilled.
+   (locking write-lock
+     (reconcile-library-tracks! conn lib-eid (set (map (juxt :rel :size) tracks)))
+     (upsert-library-tracks! conn lib-eid tracks cached))))
 
 (defn add-presence!
   "Record that `track` is now on library `lib-eid` (used after a sync add). The
   track entity already exists (it is the source track being copied), so writing its
   tags is idempotent."
   [conn lib-eid track]
-  (d/transact! conn (track-tx lib-eid true track)))
+  ;; One transaction with nothing read first, but still serialized: it writes the
+  ;; same shared track entity a concurrent refresh may be diffing (see write-lock).
+  (locking write-lock
+    (d/transact! conn (track-tx lib-eid true track))))
 
 (defn remove-presence!
   "Drop the presence of track [rel size] on library `lib-eid` (used after a sync
   delete). The track entity is left in place; other libraries may still hold it."
   [conn lib-eid rel size]
-  (when-let [p (d/q '[:find ?p . :in $ ?lib ?rel ?size
-                      :where [?p :presence/library ?lib]
-                      [?p :presence/track ?t]
-                      [?t :track/rel ?rel] [?t :track/size ?size]]
-                    (d/db conn) lib-eid rel size)]
-    (d/transact! conn [[:db/retractEntity p]])))
+  (locking write-lock
+    (when-let [p (d/q '[:find ?p . :in $ ?lib ?rel ?size
+                        :where [?p :presence/library ?lib]
+                        [?p :presence/track ?t]
+                        [?t :track/rel ?rel] [?t :track/size ?size]]
+                      (d/db conn) lib-eid rel size)]
+      (d/transact! conn [[:db/retractEntity p]]))))

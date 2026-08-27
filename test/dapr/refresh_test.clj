@@ -15,6 +15,8 @@
            (java.util.concurrent LinkedBlockingDeque)))
 
 (def ^:private refresh-library! #'refresh/refresh-library!)
+(def ^:private claim! #'refresh/claim!)
+(def ^:private release! #'refresh/release!)
 
 (defn- track [rel size]
   {:rel rel :size size :root "file:///r/" :artist "A" :mtime 1})
@@ -38,7 +40,20 @@
                  :cache       {:conn conn :path path}
                  :queue       queue
                  :checkpoints (atom {})
+                 :leases      (atom #{})
                  :running?    (atom true)}}))
+
+(defn- await-status!
+  "Block until `lib-id` reaches refresh status `want`, up to 5s. Returns true if it
+  did — the tests that drive real worker threads need a bounded wait so a
+  regression fails rather than hangs."
+  [state-atom lib-id want]
+  (let [deadline (+ (System/currentTimeMillis) 5000)]
+    (loop []
+      (cond
+        (= want (state/refresh-status @state-atom lib-id)) true
+        (> (System/currentTimeMillis) deadline)            false
+        :else                                              (do (Thread/sleep 5) (recur))))))
 
 (defn- catalog-files
   "Physical file identities [rel size] on `lib-id` — what a presence is keyed by,
@@ -180,5 +195,165 @@
         (.clear queue)
         (refresh/refresh! refresher [nil nil])
         (is (= [] (vec queue))))
+      (finally
+        (.delete path)))))
+
+(deftest device-leases-test
+  ;; What lets the pool be a pool: a coordinated device is handed to one worker at
+  ;; a time, but libraries on *different* devices go out at once. A worker rotates
+  ;; past a leased device rather than waiting on it — waiting would park a pool
+  ;; thread for the length of a whole walk, since a background waiter does not
+  ;; preempt a background holder (see dapr.device.coordinator).
+  (let [{:keys [refresher state-atom queue path]} (fixture!)
+        leases (:leases refresher)]
+    (try
+      (swap! state-atom state/set-libraries
+             [{:id 1 :name "DAP music" :roots ["mtp://1:2:a/SD/Music"]}
+              {:id 2 :name "DAP audio" :roots ["mtp://1:2:a/SD/Audiobooks"]}
+              {:id 3 :name "NAS"       :roots ["smb://nas/Music/"]}
+              {:id 4 :name "Local"     :roots ["file:///m1/"]}
+              {:id 5 :name "Local too" :roots ["file:///m2/"]}])
+
+      (testing "the first library on a device takes its lease"
+        (.addLast queue 1)
+        (.addLast queue 2)
+        (is (= {:lib-id 1 :lease "mtp://1:2:a"} (claim! refresher))))
+
+      (testing "a second library on that same device is not handed out"
+        (is (= :leased (claim! refresher))
+            "nothing runnable — 2 shares the device 1 is being walked on")
+        (is (= [2] (vec queue))
+            "and it stays queued rather than being dropped or walked twice"))
+
+      (testing "a library on another device runs at once — the whole point"
+        (.addLast queue 3)
+        (is (= {:lib-id 3 :lease "smb://nas/Music"} (claim! refresher)))
+        (is (= [2] (vec queue)) "the leased one was rotated past, not consumed"))
+
+      (testing "releasing a device lets the library waiting on it through"
+        (release! leases "mtp://1:2:a")
+        (is (= {:lib-id 2 :lease "mtp://1:2:a"} (claim! refresher))))
+
+      (testing "local libraries take no lease, so they run as wide as the pool"
+        (.clear queue)
+        (reset! leases #{})
+        (.addLast queue 4)
+        (.addLast queue 5)
+        (is (= {:lib-id 4 :lease nil} (claim! refresher)))
+        (is (= {:lib-id 5 :lease nil} (claim! refresher))
+            "every file:// library shares one device key, so leasing it would
+             serialize unrelated local libraries for no gain")
+        (is (empty? @leases)))
+
+      (testing "an empty queue says so, so the worker blocks instead of spinning"
+        (.clear queue)
+        (is (= :empty (claim! refresher))))
+
+      (testing "a library deleted while queued still claims, and is dropped downstream"
+        (.clear queue)
+        (.addLast queue :gone)
+        (is (= {:lib-id :gone :lease nil} (claim! refresher))))
+      (finally
+        (.delete path)))))
+
+(deftest worker-pool-test
+  (let [conn (cache/empty-conn)
+        path (.toFile (Files/createTempFile "dapr-pool" ".edn" (make-array FileAttribute 0)))
+        st   (atom state/initial-state)]
+    (try
+      (testing "the pool defaults to more than one worker"
+        (let [r (refresh/start! {:state-atom st :cache {:conn conn :path path}})]
+          (is (< 1 (count (:threads r))))
+          (refresh/stop! r)))
+
+      (testing "start! honours the configured size and stop! joins every worker"
+        (let [r (refresh/start! {:state-atom st :cache {:conn conn :path path} :workers 3})]
+          (is (= 3 (count (:threads r))))
+          (is (every? (fn [^Thread t] (.isAlive t)) (:threads r)))
+          (refresh/stop! r)
+          (is (not-any? (fn [^Thread t] (.isAlive t)) (:threads r))
+              "a worker left running would keep scanning a device the session is closing")))
+
+      (testing "a nonsensical size still yields a usable refresher"
+        (let [r (refresh/start! {:state-atom st :cache {:conn conn :path path} :workers 0})]
+          (is (= 1 (count (:threads r))))
+          (refresh/stop! r)))
+      (finally
+        (.delete path)))))
+
+(deftest distinct-devices-refresh-concurrently-test
+  ;; The user-visible payoff: a DAP and a NAS are scanned at the same time instead
+  ;; of back to back. Driven through the real worker threads, since that is the
+  ;; part that changed.
+  (let [conn    (cache/empty-conn)
+        path    (.toFile (Files/createTempFile "dapr-parallel" ".edn" (make-array FileAttribute 0)))
+        dap     (cache/upsert-library! conn {:name "DAP" :roots ["mtp://1:2:a/SD/Music"]})
+        nas     (cache/upsert-library! conn {:name "NAS" :roots ["smb://nas/Music/"]})
+        st      (atom (-> state/initial-state
+                          (state/set-libraries
+                           [{:id dap :name "DAP" :roots ["mtp://1:2:a/SD/Music"]}
+                            {:id nas :name "NAS" :roots ["smb://nas/Music/"]}])))
+        walking (atom #{})
+        both    (promise)
+        release (promise)]
+    (try
+      (with-redefs [nio/scan-roots!
+                    (fn [roots _opts]
+                      (when (= 2 (count (swap! walking conj (first roots))))
+                        (deliver both true))
+                      ;; Hold the "device" until the test has seen both walks, so
+                      ;; the overlap is proven rather than inferred from timing.
+                      (deref release 5000 ::timeout)
+                      {:status :complete :seen #{}})]
+        (let [r (refresh/start! {:state-atom st :cache {:conn conn :path path} :workers 2})]
+          (try
+            (refresh/refresh! r [dap nas])
+            (is (= true (deref both 5000 ::timeout))
+                "both devices were being walked at the same moment")
+            (deliver release true)
+            (is (await-status! st dap :complete))
+            (is (await-status! st nas :complete))
+            (finally
+              (deliver release true)
+              (refresh/stop! r)))))
+      (finally
+        (.delete path)))))
+
+(deftest one-device-refreshes-serially-test
+  ;; The other half: two libraries on one device are never walked at once, whatever
+  ;; the pool size. Belt and braces — the lease keeps the second worker out of the
+  ;; queue for that device, and the coordinator's lock would still exclude it if the
+  ;; lease were wrong. This asserts the invariant a user could observe (melt-jfs
+  ;; serializes MTP calls anyway); device-leases-test covers the lease itself.
+  (let [conn    (cache/empty-conn)
+        path    (.toFile (Files/createTempFile "dapr-serial" ".edn" (make-array FileAttribute 0)))
+        music   (cache/upsert-library! conn {:name "Music" :roots ["mtp://1:2:a/SD/Music"]})
+        books   (cache/upsert-library! conn {:name "Books" :roots ["mtp://1:2:a/SD/Books"]})
+        st      (atom (-> state/initial-state
+                          (state/set-libraries
+                           [{:id music :name "Music" :roots ["mtp://1:2:a/SD/Music"]}
+                            {:id books :name "Books" :roots ["mtp://1:2:a/SD/Books"]}])))
+        walking (atom #{})
+        overlap (atom false)
+        release (promise)]
+    (try
+      (with-redefs [nio/scan-roots!
+                    (fn [roots _opts]
+                      (when (< 1 (count (swap! walking conj (first roots))))
+                        (reset! overlap true))
+                      (deref release 2000 ::timeout)
+                      (swap! walking disj (first roots))
+                      {:status :complete :seen #{}})]
+        (let [r (refresh/start! {:state-atom st :cache {:conn conn :path path} :workers 4})]
+          (try
+            (refresh/refresh! r [music books])
+            (deliver release true)
+            (is (await-status! st music :complete))
+            (is (await-status! st books :complete))
+            (is (false? @overlap)
+                "one device was walked by two workers at once")
+            (finally
+              (deliver release true)
+              (refresh/stop! r)))))
       (finally
         (.delete path)))))

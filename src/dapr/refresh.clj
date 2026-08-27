@@ -1,12 +1,21 @@
 (ns dapr.refresh
   "Background library refresh: the single owner of device scanning.
 
-  One daemon worker walks libraries into the cache, so the UI never has to. The
-  table always paints from the cache (dapr.library.catalogs) and the only device
-  work a user action does is the sync copy/delete itself. That matters because a
-  scan over MTP/SMB is slow — every directory listing is a blocking native
-  round-trip — and device access is serial, so an in-flight scan used to block a
-  user's sync of the same device until it finished.
+  A small pool of daemon workers walks libraries into the cache, so the UI never
+  has to. The table always paints from the cache (dapr.library.catalogs) and the
+  only device work a user action does is the sync copy/delete itself. That matters
+  because a scan over MTP/SMB is slow — every directory listing is a blocking
+  native round-trip — and device access is serial, so an in-flight scan used to
+  block a user's sync of the same device until it finished.
+
+  The pool is bounded by **device leases**, not by threads: a coordinated device is
+  walked by one worker at a time (see claim!), so a user with a DAP and a NAS gets
+  both scanned at once instead of back to back, while two libraries on one device
+  still take turns. Local `file://` libraries need no lease and run as wide as the
+  pool. A worker never *waits* on a leased device — it rotates past it — because a
+  background waiter deliberately does not preempt a background holder
+  (dapr.device.coordinator), so waiting would trade a running walk for a parked
+  thread.
 
   It walks only what the user has *chosen* — the source, the sink, or a library
   just saved (see refresh!). A DAP that is unplugged and a share that is offline
@@ -43,6 +52,20 @@
   "How long the worker blocks waiting for the next library before re-checking the
   running flag — the upper bound on how long an idle refresher delays shutdown."
   250)
+
+(def ^:private lease-retry-millis
+  "How long a worker waits when every queued library is on a device another worker
+  is already walking. Short, because the event it is waiting for — a walk reaching
+  a directory boundary and finishing — is not something the queue can signal."
+  25)
+
+(def ^:private default-workers
+  "Pool size when the config names none. Two, because the refresher only ever walks
+  what the user has chosen: a source and a sink (plus a library just saved in the
+  editor). Those two are what parallelism buys — the DAP-and-NAS sync — and a
+  bigger pool would only add threads to sit in claim!'s rotation. Libraries sharing
+  a device are serialized by the lease no matter how wide the pool is."
+  2)
 
 (def ^:private stop-timeout-millis
   "How long halt waits for the worker to finish its current directory. A walk that
@@ -93,7 +116,10 @@
         ;; tag reuse is looked up by physical file [rel size] — before any tag has
         ;; been read — so index it by that.
         by-file   (into {} (map (juxt (juxt :rel :size) identity)) (vals known-cat))]
-    (coord/with-device! dev
+    ;; Background acquire: waiting here must not cost another walk its frontier.
+    ;; Under the device leases (see claim!) this only ever contends with a
+    ;; foreground op, which holds the lock briefly.
+    (coord/with-device-background! dev
       (fn []
         (swap! state-atom (fn [s] (-> s
                                       (state/set-refresh-status lib-id :scanning)
@@ -143,6 +169,54 @@
   (.remove queue lib-id)
   (.addFirst queue lib-id))
 
+;; --- device leases -----------------------------------------------------------
+
+(defn- lease-key
+  "The device key a walk of `library` must hold exclusively, or nil when its device
+  needs no arbitration. `:file` answers false to arbitrate-access? and every local
+  library shares the one \"file\" key, so leasing it would serialize unrelated local
+  libraries — exactly what dapr.device.file.format opts out of."
+  [library]
+  (let [dev (coord/library-device library)]
+    (when (coord/coordinated? dev) (:key dev))))
+
+(defn- lease!
+  "Try to reserve device key `k` for this worker. True when it was free (or there is
+  nothing to reserve). Compare-and-set, so two workers claiming the same device at
+  once cannot both win."
+  [leases k]
+  (or (nil? k)
+      (let [[old new] (swap-vals! leases (fn [held] (if (contains? held k) held (conj held k))))]
+        (not= old new))))
+
+(defn- release! [leases k]
+  (when k (swap! leases disj k)))
+
+(defn- claim!
+  "Take the first queued library this worker may walk, reserving its device.
+
+  A library whose device another worker is already walking is rotated to the back
+  rather than waited on: parking a pool thread on that lock would hold it for the
+  length of a whole library walk, and the walk holding it would not yield — a
+  background waiter deliberately does not trip `coord/queued?` (see
+  dapr.device.coordinator). Rotating instead lets this worker get on with a
+  library on some *other* device, which is the entire point of the pool.
+
+  Returns {:lib-id :lease}, or `:leased` when everything queued is spoken for, or
+  `:empty` when there is nothing queued. The rotation is bounded by the queue
+  length at entry so a round always terminates."
+  [{:keys [^LinkedBlockingDeque queue leases state-atom]}]
+  (loop [budget (.size queue)]
+    (if-let [lib-id (.pollFirst queue)]
+      (let [k (lease-key (state/library-by-id @state-atom lib-id))]
+        (if (lease! leases k)
+          {:lib-id lib-id :lease k}
+          (do (.addLast queue lib-id)
+              (if (pos? (dec budget))
+                (recur (dec budget))
+                :leased))))
+      :empty)))
+
 (defn refresh!
   "Queue `lib-ids` for a background refresh, in front of anything already waiting,
   and mark them :pending. This is the *only* way a library gets scanned: the app
@@ -172,14 +246,15 @@
 
 (defn- repaint!
   "Project the freshened cache into the UI when the refreshed library is the one on
-  screen. Runs *outside* the device lock: it queries the sink's free space, which
-  takes that device's lock, and taking a second lock while holding the first could
-  deadlock against a sync's two-device acquire."
+  screen. Runs *outside* the device lock, and takes no device lock of its own:
+  `:free :keep` reuses the free space already in state rather than querying the
+  sink, so a worker finishing one library never blocks on — or preempts — another
+  worker's walk of the sink's device. See catalogs/paint!."
   [{:keys [state-atom cache]} lib-id]
   (let [s @state-atom]
     (when (some #{lib-id} [(:source-id s) (:sink-id s)])
       (try
-        (catalogs/paint! state-atom (:conn cache) {:preselect? false})
+        (catalogs/paint! state-atom (:conn cache) {:preselect? false :free :keep})
         (catch Throwable t
           (t/log! {:level :warn :error t :msg "Could not repaint catalogs after a refresh: "}))))))
 
@@ -212,40 +287,66 @@
         (repaint! refresher lib-id)))))
 
 (defn- run-loop!
-  "The worker body: take the next library and refresh it, until halted."
-  [{:keys [^LinkedBlockingDeque queue running?] :as refresher}]
+  "One worker body: claim the next library its device is free for and refresh it,
+  until halted."
+  [{:keys [^LinkedBlockingDeque queue leases running?] :as refresher}]
   (while @running?
     (try
-      (when-let [lib-id (.pollFirst queue poll-millis TimeUnit/MILLISECONDS)]
-        (when @running? (refresh-library! refresher lib-id)))
+      (let [claim (claim! refresher)]
+        (case claim
+          ;; Nothing queued. Block on the queue (rather than spin) so a refresh
+          ;; the user just asked for starts at once, then hand it back for the
+          ;; next round, which is where the device lease is taken.
+          :empty  (when-let [lib-id (.pollFirst queue poll-millis TimeUnit/MILLISECONDS)]
+                    (.addFirst queue lib-id))
+          ;; Everything queued is on a device another worker is walking. Wait a
+          ;; beat: the wake-up that matters is a walk finishing, which no queue
+          ;; operation signals.
+          :leased (Thread/sleep lease-retry-millis)
+          (try
+            (when @running? (refresh-library! refresher (:lib-id claim)))
+            (finally (release! leases (:lease claim))))))
       (catch InterruptedException _ (reset! running? false))
       (catch Throwable t
         (t/log! {:level :error :error t :msg "Background refresh worker error: "})))))
 
 (defn start!
   "Start the refresher over `state-atom` and the `cache` component {:conn :path}.
-  Returns the component; nothing is queued until refresh! is called."
-  [{:keys [state-atom cache]}]
+  Returns the component; nothing is queued until refresh! is called.
+
+  `workers` sizes the pool (default `default-workers`). Libraries on *different*
+  devices then refresh at once — a DAP and a NAS no longer wait for each other —
+  while a device is still walked by one worker at a time (see claim!)."
+  [{:keys [state-atom cache workers]}]
   (let [refresher {:state-atom  state-atom
                    :cache       cache
                    :queue       (LinkedBlockingDeque.)
                    :checkpoints (atom {})
+                   :leases      (atom #{})
                    :running?    (atom true)}
-        thread    (doto (Thread. ^Runnable #(run-loop! refresher) "dapr-refresh")
-                    (.setDaemon true)
-                    (.start))]
-    (assoc refresher :thread thread)))
+        threads   (mapv (fn [i]
+                          (doto (Thread. ^Runnable #(run-loop! refresher)
+                                         (str "dapr-refresh-" i))
+                            (.setDaemon true)
+                            (.start)))
+                        (range (max 1 (or workers default-workers))))]
+    (assoc refresher :threads threads)))
 
 (defn stop!
-  "Halt the refresher and wait briefly for the worker to leave the device. The
+  "Halt the refresher and wait briefly for every worker to leave its device. Each
   in-flight walk sees the cleared running flag at its next directory boundary and
-  returns, so the device is released before the session-closing :dapr/devices
+  returns, so the devices are released before the session-closing :dapr/devices
   component runs. Not interrupted: interrupting a thread inside an NIO call closes
-  the channel under the provider, which is worse than waiting."
-  [{:keys [running? ^Thread thread ^LinkedBlockingDeque queue]}]
+  the channel under the provider, which is worse than waiting.
+
+  The timeout is a deadline shared by the pool, not one per worker: the workers
+  wind down concurrently, so N stuck workers must not mean N times the wait before
+  the app can exit."
+  [{:keys [running? threads ^LinkedBlockingDeque queue]}]
   (when running? (reset! running? false))
   (when queue (.clear queue))
-  (when thread
-    (.join thread stop-timeout-millis)
-    (when (.isAlive thread)
+  (let [deadline (+ (System/currentTimeMillis) stop-timeout-millis)]
+    (doseq [^Thread t threads]
+      (.join t (max 1 (- deadline (System/currentTimeMillis)))))
+    (when (some (fn [^Thread t] (.isAlive t)) threads)
       (t/log! :warn "Background refresh did not stop in time; leaving it to the JVM exit."))))

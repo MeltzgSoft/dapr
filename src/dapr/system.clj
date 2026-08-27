@@ -89,8 +89,8 @@
 (defmethod ig/halt-key! :dapr/coordinator [_ _]
   (coord/reset-locks!))
 
-(defmethod ig/init-key :dapr/refresher [_ {:keys [state-atom cache]}]
-  (refresh/start! {:state-atom state-atom :cache cache}))
+(defmethod ig/init-key :dapr/refresher [_ {:keys [state-atom cache workers]}]
+  (refresh/start! {:state-atom state-atom :cache cache :workers workers}))
 
 (defmethod ig/halt-key! :dapr/refresher [_ refresher]
   ;; Ordered before :dapr/devices (which this component refs), so the worker has

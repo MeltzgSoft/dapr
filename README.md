@@ -51,7 +51,10 @@ anything is in flight and says what it is; clicking it opens the **activity
 panel**, whose collapsible **Jobs** list shows a row per running job — the
 current sync or preview, plus every library being scanned, paused or failed (with
 its reason), and a count of those still queued — beside the live log. With nothing
-running there is no summary at all. A scan **yields its device** the moment a sync needs it,
+running there is no summary at all. Libraries on **different devices are scanned
+at once** — a player and a network share no longer wait for each other — while a
+single device is still walked one library at a time, since that is the thing
+there is only one of. A scan **yields its device** the moment a sync needs it,
 then resumes where it left off, so a transfer never waits behind one. A refresh
 that hasn't finished leaves the cached track list a possibly-stale *superset* of
 what is on the device, so syncing before it completes asks for confirmation
@@ -97,7 +100,8 @@ src/dapr/
   device/          per-scheme behaviour, keyed on the root URI scheme
     format.clj    pure  scheme multimethods (device-type, labels, supported?)
     fs.clj        I/O   root-path!/dir-children!/available? multimethods
-    coordinator.clj I/O per-device locks; user ops preempt the refresher
+    coordinator.clj I/O per-device locks; user ops preempt the refresher, and
+                        background waiters do not preempt each other
     tag.clj       I/O   tags! multimethod (embedded vs path-derived); default is path
     events.clj    I/O   folder-browser event multimethods (setup/connect/list)
     views.clj     pure  device-specific view extension points + shared browser
@@ -109,7 +113,8 @@ src/dapr/
   library/
     store.clj      I/O   load!/save! libraries as EDN under the config dir
     catalogs.clj   I/O   paint state's catalogs from the cache (no device walk)
-  refresh.clj      I/O   background refresher: resumable walks into the cache
+  refresh.clj      I/O   background refresher: a worker pool doing resumable walks
+                         into the cache, one walk per device (device leases)
   sync.clj         I/O   execute-plan! with progress callback + cache follow-up
   log.clj          I/O   Telemere handlers: rolling log file + live-panel buffer
   state.clj        pure  state-transition fns over a single state map

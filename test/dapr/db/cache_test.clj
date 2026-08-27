@@ -198,6 +198,33 @@
                                                     :root "smb://h/s/")])
       (is (= "PathY" (:artist (get (by-file (cache/library-catalog (d/db conn) b)) ["y.mp3" 2])))))))
 
+(deftest concurrent-writers-keep-the-downgrade-guard-test
+  ;; The guard reads :track/tag-source and then transacts, and the track entity is
+  ;; shared between libraries — so two refresh workers scanning different libraries
+  ;; that hold the same file could both read "no embedded tags yet" and let the
+  ;; path-derived one win. Writes are serialized to close that window (see
+  ;; cache/write-lock); before that, this lost the embedded tags outright.
+  (dotimes [_ 20]
+    (let [conn (cache/empty-conn)
+          a    (cache/upsert-library! conn {:name "A" :roots ["file:///a/"]})
+          b    (cache/upsert-library! conn {:name "B" :roots ["smb://h/s/"]})
+          go   (promise)
+          ;; Both workers write the same [rel size] at once, one with embedded tags
+          ;; and one with path-derived ones. Whatever the interleaving, embedded
+          ;; must survive.
+          fs   [(future @go (cache/upsert-library-tracks!
+                             conn a [(track "x.mp3" 1 :artist "Real" :source :embedded)]))
+                (future @go (cache/upsert-library-tracks!
+                             conn b [(track "x.mp3" 1 :artist "Path" :source :path
+                                            :root "smb://h/s/")]))]]
+      (deliver go true)
+      (doseq [f fs] (deref f 5000 ::timeout))
+      (let [ca (get (by-file (cache/library-catalog (d/db conn) a)) ["x.mp3" 1])]
+        (is (= :embedded (:source ca)) "embedded tags were downgraded by a concurrent path scan")
+        (is (= "Real" (:artist ca))))
+      (testing "and both libraries still record the track"
+        (is (= #{a b} (set (cache/track-libraries (d/db conn) "x.mp3" 1))))))))
+
 (deftest incremental-replace-test
   (let [conn (cache/empty-conn)
         lib  (cache/upsert-library! conn {:name "L" :roots ["file:///r/"]})

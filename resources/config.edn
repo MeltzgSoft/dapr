@@ -15,11 +15,13 @@
  :dapr/coordinator {}
  ;; The background library refresher. Refs :dapr/devices so it halts *before* the
  ;; device sessions it scans through are closed, and :dapr/coordinator so the locks
- ;; it takes outlive it.
+ ;; it takes outlive it. :workers sizes the pool: libraries on *different* devices
+ ;; refresh at once, while one device is still walked a library at a time.
  :dapr/refresher {:state-atom  #ig/ref :dapr/state
                   :cache       #ig/ref :dapr/cache
                   :coordinator #ig/ref :dapr/coordinator
-                  :devices     #ig/ref :dapr/devices}
+                  :devices     #ig/ref :dapr/devices
+                  :workers     2}
  ;; The web UI. Loopback-only by default: the endpoints act on the user's own
  ;; devices with no authentication, so they have no business on the network.
  ;; dapr.main overrides :host/:port/:open-browser? from the command line or the

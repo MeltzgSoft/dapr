@@ -8,8 +8,10 @@ Update the checkboxes and **Status** lines as work lands.
 
 ## Current status
 
-**All nine planned features are done and merged to `main`.** Both research
-spikes have since been promoted to real features:
+**All nine planned features are done and merged to `main`**, as are §10
+(background refresh) and §11 (parallel refresh — on `feat/parallel-refresh`, which
+still wants the hardware smoke that §10 also never got). Both research spikes have
+since been promoted to real features:
 
 - **Spike 4 — MTP tags → shipped** on `spike/mtp-tags`
   ([PR #33](https://github.com/meltzg/dapr/pull/33)). `dapr.device.mtp.tag`
@@ -734,9 +736,15 @@ Changed: `fs/nio.clj`, `db/cache.clj`, `state.clj`, `ui/events.clj`, `ui/views.c
 ---
 
 ## 11. `feat/parallel-refresh` — scan independent devices at once
-**📋 SKETCHED, not started.** Do it *after* feature 10's hardware smoke: landing
-concurrency on a refresher that has never run against real MTP hardware means
-debugging two unknowns at once.
+**✅ DONE** on `feat/parallel-refresh` — all 5 phases built; unit (155 tests) +
+integration (23 tests) green, clj-kondo + cljfmt clean. **Still wants the hardware
+smoke**, which feature 10 also never got: this landed concurrency on a refresher
+that has not run against real MTP hardware, so that smoke now covers both.
+
+**What was built** (differs from the sketch below in one place, noted at the
+design summary): the pool is bounded by **device leases** rather than by parking
+workers on locks, `queued?` counts foreground waiters, cache writes are
+serialized, and `repaint!` no longer takes a device lock at all.
 
 **Why.** The refresher is one daemon thread taking one library at a time
 (`refresh/run-loop!`), so a user with a DAP and a NAS waits for both slow scans
@@ -768,6 +776,9 @@ blocking, which is correct.
   another worker is already walking, rather than parking a pool thread on its lock.
   Devices that answer `arbitrate-access?` **false** (`:file`) need no lease, so
   local libraries can run as wide as the pool. `stop!` joins every worker.
+  *Built as sketched* — `refresh/claim!` returns the claim, `:leased` (rotated over
+  everything, all devices busy) or `:empty` (nothing queued, so block on the queue
+  rather than spin).
 - **Cache writes**: `upsert-library-tracks!` is read-modify-write (read
   `library-catalog` + `track-sources`, diff, transact) over track entities that are
   **shared across libraries**. Two libraries holding the same file can interleave
@@ -777,22 +788,36 @@ blocking, which is correct.
   *writes* through one lock (they are in-memory and fast next to a device walk, so
   contention is irrelevant). Note this interleave is *already possible* between the
   refresher and `sync/apply-plan-to-cache!`; parallelism only widens the window.
-- **Repaint**: with the foreground-aware `queued?` a worker's `library-free!` no
-  longer looks like a preemption; concurrent `paint!` calls are last-swap-wins over
-  consistent cache reads, which is fine.
+- **Repaint**: ~~with the foreground-aware `queued?` a worker's `library-free!` no
+  longer looks like a preemption~~. **Changed in the build.** Foreground-aware
+  `queued?` stops the repaint *preempting* a walk, but leaves it *blocking* on one:
+  a background waiter is by design not a preemption signal, so a worker asking the
+  sink for free space would park behind another worker's entire library walk. So
+  `paint!` grew a `free` option and `repaint!` passes `:keep` — reusing the free
+  space already in state and taking no device lock at all. Nothing is lost: free
+  space moves when a sync writes or the user picks a different sink, and both of
+  those paint with `:query`.
 
-**Phases.** 1. Foreground-aware `queued?` (+ `coordinator_test` for two background
-holders not thrashing). 2. Serialized cache writes. 3. Worker pool + device leases.
-4. `stop!` over the pool. 5. Smoke: two slow devices scanning at once, a sync still
-preempting both.
+**Phases.** 1. ✅ Foreground-aware `queued?` (+ `coordinator_test` for two
+background holders not thrashing — verified failing against the old
+`hasQueuedThreads`). 2. ✅ Serialized cache writes (+ a `cache_test` that loses the
+embedded tags without the lock). 3. ✅ Worker pool + device leases. 4. ✅ `stop!`
+over the pool, on a deadline shared by the workers rather than one per worker.
+5. ⏳ Smoke: two slow devices scanning at once, a sync still preempting both.
 
-**Open questions.** Pool size (one thread per distinct device key, or a fixed small
-pool?); whether the sync gate should wait for *all* in-flight refreshes rather than
-just source and sink. Note the payoff shrank once the refresher stopped queueing
-every library: the queue now holds a source and a sink, so parallelism buys the
-overlap of exactly those two — worth it when they are both slow and on different
-devices (a DAP and a NAS), which is the common sync, but no longer a launch-time
-stampede to untangle.
+**Open questions — resolved.** *Pool size*: a fixed small pool, default **2**,
+`:workers` in `config.edn`. One thread per device key was rejected because every
+`file://` library shares the single `"file"` key, so that mapping both
+over-threads (a thread per absent device) and under-parallelizes (one thread for
+every local library). Two matches what the refresher actually queues — a source
+and a sink. *Sync gate*: left as-is (source and sink only); waiting on unrelated
+in-flight refreshes would block a sync on a library it is not touching.
+
+**Residual, accepted.** `refresh!` skips a library whose status is `:scanning`, but
+a worker only sets that *after* acquiring the device. For a coordinated device the
+lease closes the gap; for `file://` there is no lock, so the window is microseconds
+and the worst case is duplicated work plus a clobbered checkpoint — wasteful, not
+incorrect. Not worth a second in-flight set to close.
 
 **Prerequisite already split out:** the concurrent-snapshot fix this work would
 otherwise have had to make first ships as its own change (`fix(cache): give each

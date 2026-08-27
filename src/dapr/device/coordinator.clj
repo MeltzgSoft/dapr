@@ -12,9 +12,23 @@
   - **Foreground** work wraps itself in `with-device!` / `with-devices!` and simply
     blocks. The lock is fair, so it is served in arrival order rather than being
     starved by a scan that keeps re-acquiring.
-  - **Background** work (dapr.refresh) also holds the lock, but polls `queued?` at
-    directory boundaries and releases as soon as anyone is waiting, checkpointing
-    its walk so it can resume where it left off.
+  - **Background** work (dapr.refresh) uses `with-device-background!`, and polls
+    `queued?` at directory boundaries to release as soon as a *foreground* op is
+    waiting, checkpointing its walk so it can resume where it left off.
+
+  The two entry points differ only in whether they count as a waiter, and that
+  distinction is what makes preemption safe under a *pool* of refresh workers.
+  `queued?` used to be `ReentrantLock.hasQueuedThreads`, which is true when anyone
+  at all waits — so two background walks on one device would preempt *each other*:
+  B blocks, A check-points and releases, B acquires and immediately sees A waiting,
+  so B check-points too, a check-point per directory and strictly worse than
+  serial. Counting only foreground waiters means background contention degrades to
+  ordinary blocking instead of thrash.
+
+  dapr.refresh separately leases a device to one walk at a time, so in practice
+  background walks do not contend at all. The count is what keeps that a *local*
+  property rather than an invariant the whole system has to preserve: a background
+  device query added later blocks, but cannot make a walk throw away its frontier.
 
   Which devices need arbitrating is a property of the device *type*, answered by
   the `dapr.device.format/arbitrate-access?` multimethod alongside the rest of the
@@ -53,6 +67,13 @@
   [{:keys [key type]}]
   (boolean (and key (device-format/arbitrate-access? type))))
 
+(defonce ^:private foreground-waiters*
+  ;; device key -> how many foreground threads are currently blocked on that
+  ;; device's lock. Maintained alongside the lock rather than read off it because
+  ;; ReentrantLock cannot say *who* is waiting, and only a foreground waiter should
+  ;; cost a background walk its place (see the ns docstring).
+  (atom {}))
+
 (defn- lock-for
   "The fair lock for device key `k`, creating it on first use."
   ^ReentrantLock [k]
@@ -61,24 +82,51 @@
            k)))
 
 (defn queued?
-  "True when another thread is waiting to acquire `device` — the background
+  "True when a *foreground* thread is waiting to acquire `device` — the background
   refresher's signal to check-point its walk and release it (see dapr.refresh).
-  Always false for a device that needs no arbitration."
+  Always false for a device that needs no arbitration.
+
+  Deliberately blind to background waiters: see the ns docstring for the
+  check-point thrash that counting them causes."
   [device]
   (boolean (when (coordinated? device)
-             (when-let [^ReentrantLock l (get @locks* (:key device))]
-               (.hasQueuedThreads l)))))
+             (pos? (get @foreground-waiters* (:key device) 0)))))
 
-(defn with-device!
-  "Run `f` holding `device`'s lock, blocking until it is free. A device that needs
-  no arbitration (see coordinated?) runs `f` directly. Reentrant: nesting the same
-  device on one thread is safe. Returns f's value."
-  [device f]
+(defn- with-lock!
+  "Run `f` holding `device`'s lock, blocking until it is free. `foreground?` says
+  whether the wait should be visible to `queued?` — i.e. whether a background
+  holder should give the device up for it."
+  [device foreground? f]
   (if-not (coordinated? device)
     (f)
-    (let [^ReentrantLock l (lock-for (:key device))]
-      (.lock l)
+    (let [k                (:key device)
+          ^ReentrantLock l (lock-for k)]
+      (if-not foreground?
+        (.lock l)
+        ;; Counted from *before* the block until the moment it is acquired, so a
+        ;; holder polling queued? sees the waiter for the whole of its wait. The
+        ;; decrement is in a finally so a throw from .lock cannot strand a count
+        ;; and make a device look permanently wanted.
+        (do (swap! foreground-waiters* update k (fnil inc 0))
+            (try (.lock l)
+                 (finally (swap! foreground-waiters* update k dec)))))
       (try (f) (finally (.unlock l))))))
+
+(defn with-device!
+  "Run `f` holding `device`'s lock as a **foreground** operation: a background walk
+  of the same device check-points and yields it. A device that needs no arbitration
+  (see coordinated?) runs `f` directly. Reentrant: nesting the same device on one
+  thread is safe. Returns f's value."
+  [device f]
+  (with-lock! device true f))
+
+(defn with-device-background!
+  "Run `f` holding `device`'s lock as **background** work (dapr.refresh's walk).
+  Identical to `with-device!` except that waiting here does not preempt a
+  background holder — it simply blocks, since two walks trading a device a
+  directory at a time is worse than one finishing first."
+  [device f]
+  (with-lock! device false f))
 
 (defn with-devices!
   "Run `f` holding every one of `devices` (a sync touches its source *and* its
@@ -95,7 +143,8 @@
                 (reverse)))))
 
 (defn reset-locks!
-  "Drop every memoized lock. For the :dapr/coordinator component's halt (and tests)
-  — a fresh system starts with no device held."
+  "Drop every memoized lock and waiter count. For the :dapr/coordinator component's
+  halt (and tests) — a fresh system starts with no device held and none wanted."
   []
-  (reset! locks* {}))
+  (reset! locks* {})
+  (reset! foreground-waiters* {}))
