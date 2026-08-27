@@ -10,7 +10,7 @@
   ;; the smb:// reader backs one with a seekable channel to read embedded tags
   ;; from a few KB of header rather than transferring whole files (see
   ;; dapr.device.smb.tag).
-  io.github.meltzg/melt-jfs {:mvn/version "0.2.0"}
+  io.github.meltzg/melt-jfs {:mvn/version "0.2.2"}
   ;; SMB/CIFS share support. smb-nio registers a java.nio "smb://"
   ;; FileSystemProvider (jcifs-ng backed), so the sync engine reaches SMB shares
   ;; through the same NIO code as file:// and mtp://. java-keyring stores share
@@ -28,10 +28,10 @@
   ;; In-memory Datalog DB (Clojars) used as the persisted scan cache and the
   ;; system of record for libraries. Snapshotted to an EDN file (see dapr.cache);
   ;; pure-JVM, so it needs no extra native-access flags.
-  datascript/datascript               {:mvn/version "1.7.8"}
+  datascript/datascript               {:mvn/version "1.8.1"}
   ;; Structured logging: file output + an in-memory ring buffer feeding the live
   ;; activity panel (see dapr.log). Clojure-native, so no SLF4J/logback wiring.
-  com.taoensso/telemere               {:mvn/version "1.2.1"}
+  com.taoensso/telemere               {:mvn/version "1.4.0"}
 
   ;; --- web UI ----------------------------------------------------------------
   ;; The UI is a local web app (see dapr.web.*): the server renders HTML, HTMX
@@ -45,8 +45,8 @@
   ;; supplies the params/keyword middleware and resource responses, and hiccup
   ;; renders the views — which stay pure data-in/HTML-out, as the cljfx views
   ;; were.
-  http-kit/http-kit    {:mvn/version "2.8.0"}
-  metosin/reitit-ring  {:mvn/version "0.9.1"}
+  http-kit/http-kit    {:mvn/version "2.8.1"}
+  metosin/reitit-ring  {:mvn/version "0.10.1"}
   ;; reitit-ring pulls an older ring-core; pin the current one explicitly rather
   ;; than inherit whatever it happens to depend on.
   ring/ring-core       {:mvn/version "1.15.5"}
@@ -56,7 +56,7 @@
   ;; dependency and lands in the uberjar at build time. dapr.web.assets finds
   ;; the scripts on the classpath (each version read from its WebJar's
   ;; pom.properties) and serves them from /assets/.
-  org.webjars.npm/htmx.org     {:mvn/version "2.0.6"}
+  org.webjars.npm/htmx.org     {:mvn/version "2.0.10"}
   ;; The SSE extension, for the pushed region notifications (dapr.web.events).
   ;; Deliberately NOT the copy bundled at htmx.org's own dist/ext/sse.js: that
   ;; one is the htmx 1.x extension, left in the npm package for compatibility.
@@ -64,7 +64,7 @@
   ;; so every region silently fell back to its timer — which looks exactly like
   ;; a slow app rather than a broken one. htmx 2 moved extensions to packages of
   ;; their own; this is that package.
-  org.webjars.npm/htmx-ext-sse {:mvn/version "2.2.3"}
+  org.webjars.npm/htmx-ext-sse {:mvn/version "2.2.4"}
   ;; Idiomorph, as htmx's `morph` swap. The live regions (status strip, jobs,
   ;; log) are re-rendered as often as once a second while a scan runs, and
   ;; replacing an element throws away the state the DOM owns rather than the
@@ -74,7 +74,7 @@
   org.webjars.npm/idiomorph     {:mvn/version "0.7.4"}
   ;; Command-line parsing for dapr.main's --port/--host/--no-browser, so the flags
   ;; are validated and the --help summary generated rather than hand-rolled.
-  org.clojure/tools.cli        {:mvn/version "1.1.230"}}
+  org.clojure/tools.cli        {:mvn/version "1.4.256"}}
 
  :aliases
  {;; Run the app: starts the local web server and opens the UI in a browser.
@@ -97,7 +97,7 @@
   :test
   {:extra-paths ["test"]
    :extra-deps  {io.github.cognitect-labs/test-runner {:git/tag "v0.5.1" :git/sha "dfb30dd"}
-                 com.google.jimfs/jimfs               {:mvn/version "1.3.1"}}
+                 com.google.jimfs/jimfs               {:mvn/version "1.3.2"}}
    :main-opts   ["-m" "cognitect.test-runner"]
    :exec-fn     cognitect.test-runner.api/test}
 
@@ -115,7 +115,7 @@
   :integration
   {:extra-paths ["test-integration" "test"]
    :extra-deps  {io.github.cognitect-labs/test-runner {:git/tag "v0.5.1" :git/sha "dfb30dd"}
-                 com.google.jimfs/jimfs               {:mvn/version "1.3.1"}
+                 com.google.jimfs/jimfs               {:mvn/version "1.3.2"}
                  ;; Manages each backend's service container from a :once fixture.
                  org.testcontainers/testcontainers     {:mvn/version "2.0.5"}}
    :jvm-opts    ["--enable-native-access=ALL-UNNAMED"]
@@ -126,13 +126,13 @@
   ;; require isn't on this alias — at startup.
   :cljfmt
   {:extra-paths ["test" "test-integration"]
-   :extra-deps  {dev.weavejester/cljfmt {:mvn/version "0.16.4"}}
+   :extra-deps  {dev.weavejester/cljfmt {:mvn/version "0.16.5"}}
    :main-opts   ["-m" "cljfmt.main"]}
 
   ;; Linting. dev/src kept off the classpath for the same reason as :cljfmt above.
   :clj-kondo
   {:extra-paths ["test" "test-integration"]
-   :extra-deps  {clj-kondo/clj-kondo {:mvn/version "2026.05.25"}}
+   :extra-deps  {clj-kondo/clj-kondo {:mvn/version "2026.08.04"}}
    :main-opts   ["-m" "clj-kondo.main"]}
 
   ;; Release build: `clojure -T:build uber` produces an AOT uberjar for
@@ -140,5 +140,5 @@
   ;; JavaFX — nothing on the classpath ships per-OS natives (the MTP and keystore
   ;; backends bind to the host's own libraries at runtime).
   :build
-  {:deps      {io.github.clojure/tools.build {:mvn/version "0.10.9"}}
+  {:deps      {io.github.clojure/tools.build {:mvn/version "0.10.14"}}
    :ns-default build}}}

@@ -164,7 +164,7 @@ jobs:
         uses: actions/checkout@v7
 
       - name: Set up JDK
-        uses: actions/setup-java@v5
+        uses: actions/setup-java@v6
         with:
           distribution: temurin
           java-version: '25'
@@ -175,7 +175,7 @@ jobs:
           cli: latest
 
       - name: Cache dependencies
-        uses: actions/cache@v5
+        uses: actions/cache@v6
         with:
           path: |
             ~/.m2/repository
@@ -191,7 +191,7 @@ jobs:
 
       - name: Attach jar to release
         if: ${{ !inputs.installers_only }}
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           files: target/dapr-*.jar
 
@@ -199,7 +199,7 @@ jobs:
       # same bytes on every OS, and rebuilding it three more times would be three
       # more chances for the installers to disagree with the published jar.
       - name: Upload jar for the installers
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: dapr-jar
           path: target/dapr-*.jar
@@ -247,7 +247,7 @@ jobs:
       # For jlink, not for compiling: the runtime staged into the installer is
       # linked from this JDK, which is why each leg needs one of its own platform.
       - name: Set up JDK
-        uses: actions/setup-java@v5
+        uses: actions/setup-java@v6
         with:
           distribution: temurin
           java-version: '25'
@@ -262,14 +262,14 @@ jobs:
           cli: latest
 
       - name: Set up Node
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v7
         with:
           node-version: '22'
           cache: npm
           cache-dependency-path: electron/package-lock.json
 
       - name: Download the jar
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: dapr-jar
           path: target
@@ -291,7 +291,7 @@ jobs:
 
       - name: Attach installers to release
         if: ${{ !inputs.installers_only }}
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           files: ${{ matrix.artifacts }}
 
@@ -299,7 +299,7 @@ jobs:
       # that produced it.
       - name: Upload installers as run artifacts
         if: ${{ inputs.installers_only }}
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: installers-${{ matrix.os }}
           path: ${{ matrix.artifacts }}
