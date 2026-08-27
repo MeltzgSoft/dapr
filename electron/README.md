@@ -155,6 +155,24 @@ It is set with `npm pkg set` and deliberately *not* with electron-builder's
 everything it does not recognise, including `scripts` and `devDependencies`,
 leaving a checkout that later steps cannot build.
 
+### Smoke-testing the Windows and macOS legs
+
+Only the host OS's installers can be built on a given machine, so the Windows and
+macOS legs are exercised nowhere but CI — and CI only packages on a `v#.#.#` tag.
+That would make a real release the first run of that code, where a failure leaves
+the jar attached and the installers missing.
+
+So `release.yml` takes an `installers_only` dispatch input. Run the workflow from
+any ref with it ticked and it skips the hardware gate and both test suites,
+builds the installers on all three runners, and **publishes nothing** — each leg
+uploads its output as a run artifact (`installers-<os>`, kept 7 days) for you to
+download and open on that platform. The version is pinned to `0.0.0-smoke` rather
+than taken from the ref, since a branch name like `split/08-package` would put a
+slash in the jar's filename.
+
+Note that GitHub reads dispatch inputs from the workflow file **on the default
+branch**, so the tick box only appears once this has merged.
+
 ### Known gaps
 
 - **No application icon.** Builds warn and fall back to the default Electron

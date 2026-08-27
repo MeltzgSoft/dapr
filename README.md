@@ -266,6 +266,9 @@ clojure -M:cljfmt check        # or: clojure -M:cljfmt fix
 
 # Build the release uberjar (target/dapr-<version>.jar)
 clojure -T:build uber
+
+# Build this OS's desktop installers (needs `npm ci` in electron/ first)
+clojure -T:build package-electron
 ```
 
 Each component documents itself, so these are the places to look rather than
@@ -306,6 +309,29 @@ java --enable-native-access=ALL-UNNAMED -jar dapr-<version>.jar
 The jar's manifest sets `Enable-Native-Access: ALL-UNNAMED`, so JDKs that honour
 it run `java -jar dapr-....jar` without the flag; older JDKs still need it to
 reach the native MTP/keystore code.
+
+### Desktop installers
+
+A release publishes **installers** as well as the jar — AppImage and deb, an NSIS
+`.exe`, a `.dmg`. Unlike the jar these genuinely are per-platform, and each
+carries its own trimmed JRE, so installing Dapr does not also mean installing a
+JDK.
+
+Building them needs Node as well as the JDK, and only the host OS's installers
+can be built on a given machine:
+
+```bash
+cd electron && npm ci && cd ..
+clojure -T:build uber
+clojure -T:build package-electron      # outputs land in electron/dist/
+```
+
+The rest is documented where it lives: [what gets staged and
+why](electron/README.md#packaging), the [known
+gaps](electron/README.md#known-gaps) (no icon, nothing signed, macOS arm64 only),
+and how to [smoke-test the Windows and macOS
+legs](electron/README.md#smoke-testing-the-windows-and-macos-legs) without
+cutting a release.
 
 REPL-driven development (Integrant):
 

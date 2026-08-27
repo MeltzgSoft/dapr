@@ -38,6 +38,16 @@ on:
         description: "Why the gate is being overridden (recorded in this run's log)"
         required: false
         default: ""
+      # Smoke test for the packaging matrix. The installer legs only ever run on
+      # a tag, so without this the first time Windows and macOS package anything
+      # is during a real release -- and a failure there is a release that got its
+      # jar attached and its installers not. This builds them from any ref, with
+      # no gates and nothing published: the artifacts land on the run for you to
+      # download and open.
+      installers_only:
+        description: "Build the installers only: no gates, no release, artifacts on the run"
+        type: boolean
+        default: false
 
 permissions:
   contents: write
@@ -53,6 +63,10 @@ jobs:
   # forge behind the home network, so the forge pushes the result here rather
   # than this job pulling it.
   hardware-gate:
+    # A smoke build publishes nothing, so there is nothing for the gate to
+    # protect. Skipped rather than overridden: the override is a recorded
+    # decision about a real release, and reusing it here would blur that.
+    if: ${{ !inputs.installers_only }}
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -126,16 +140,25 @@ jobs:
   # the unit + integration suites pass on every OS. These reuse the same
   # workflows CI runs (windows/mac/linux matrix, native SMB provisioning, etc.).
   test:
+    if: ${{ !inputs.installers_only }}
     uses: ./.github/workflows/test.yml
 
   integration:
+    if: ${{ !inputs.installers_only }}
     uses: ./.github/workflows/integration.yml
 
   build:
     needs: [hardware-gate, test, integration]
+    # `!cancelled()` so this still runs when the three above are *skipped* by a
+    # smoke build, and the failure check so a real release cannot slip past a
+    # gate that actually ran and said no.
+    if: ${{ !cancelled() && !contains(needs.*.result, 'failure') }}
     runs-on: ubuntu-latest
     env:
-      DAPR_VERSION: ${{ github.ref_name }}
+      # Not github.ref_name for a smoke build: that can be dispatched from a
+      # branch, and a name like `split/08-package` would become the jar's version
+      # and put a slash in its filename.
+      DAPR_VERSION: ${{ inputs.installers_only && '0.0.0-smoke' || github.ref_name }}
     steps:
       - name: Checkout
         uses: actions/checkout@v7
@@ -167,6 +190,7 @@ jobs:
         run: clojure -T:build uber
 
       - name: Attach jar to release
+        if: ${{ !inputs.installers_only }}
         uses: softprops/action-gh-release@v2
         with:
           files: target/dapr-*.jar
@@ -253,10 +277,21 @@ jobs:
       # to be bumped to cut a release.
       - name: Build installers
         env:
-          DAPR_VERSION: ${{ github.ref_name }}
+          DAPR_VERSION: ${{ inputs.installers_only && '0.0.0-smoke' || github.ref_name }}
         run: clojure -T:build package-electron
 
       - name: Attach installers to release
+        if: ${{ !inputs.installers_only }}
         uses: softprops/action-gh-release@v2
         with:
           files: ${{ matrix.artifacts }}
+
+      # The smoke build's whole point: something downloadable to open on the OS
+      # that produced it.
+      - name: Upload installers as run artifacts
+        if: ${{ inputs.installers_only }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: installers-${{ matrix.os }}
+          path: ${{ matrix.artifacts }}
+          retention-days: 7
