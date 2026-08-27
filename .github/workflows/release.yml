@@ -210,6 +210,15 @@ jobs:
   # step where the artifact genuinely is platform-specific.
   package:
     needs: [build]
+    # Needed for the same reason `build` needs its own condition, one step
+    # further down the graph: "skipped" propagates transitively, so the default
+    # `success()` here sees the gates that a smoke build skipped and skips this
+    # matrix too -- which silently turned the smoke build into a jar build that
+    # reported green. Keyed to `build` actually succeeding rather than reusing
+    # build's `!contains(..., 'failure')`: when a real gate says no, `build` is
+    # *skipped* rather than failed, and that check would let packaging start
+    # with no jar to download.
+    if: ${{ !cancelled() && needs.build.result == 'success' }}
     strategy:
       # One OS failing should not deny the others their installers -- a release
       # with two of three is worth more than a release with none, and the jar is
