@@ -736,10 +736,10 @@ Changed: `fs/nio.clj`, `db/cache.clj`, `state.clj`, `ui/events.clj`, `ui/views.c
 ---
 
 ## 11. `feat/parallel-refresh` — scan independent devices at once
-**✅ DONE** on `feat/parallel-refresh` — all 5 phases built; unit (155 tests) +
-integration (23 tests) green, clj-kondo + cljfmt clean. **Still wants the hardware
-smoke**, which feature 10 also never got: this landed concurrency on a refresher
-that has not run against real MTP hardware, so that smoke now covers both.
+**✅ DONE** on `feat/parallel-refresh` — unit (155 tests) + integration (28 tests)
+green, clj-kondo + cljfmt clean. The hardware smoke feature 10 never got is now
+**automated on the device runners** for everything a machine can judge (see
+"Phase 5: the smoke, split"); what remains is a human looking at a big library.
 
 **What was built** (differs from the sketch below in one place, noted at the
 design summary): the pool is bounded by **device leases** rather than by parking
@@ -803,7 +803,38 @@ background holders not thrashing — verified failing against the old
 `hasQueuedThreads`). 2. ✅ Serialized cache writes (+ a `cache_test` that loses the
 embedded tags without the lock). 3. ✅ Worker pool + device leases. 4. ✅ `stop!`
 over the pool, on a deadline shared by the workers rather than one per worker.
-5. ⏳ Smoke: two slow devices scanning at once, a sync still preempting both.
+5. **Split in two** — see below.
+
+### Phase 5: the smoke, split
+
+The one "smoke" in the original sketch bundled two jobs with different homes.
+
+**✅ The behavioural half is now automated** on the device runners, as
+`test-integration/dapr/refresh_device_integration_test.clj`. `linux-usb`/
+`windows-usb` already carry an attached MTP device *and* a native samba share
+(`TEST_SMB_GUEST_URL`), which is two distinct device keys — the DAP-and-NAS shape
+this feature exists for. It covers: a walk pausing and resuming across a real
+device without re-listing a directory; a foreground op taking the device from an
+in-flight walk, which check-points and later resumes; two libraries on one device
+never walked at once; and an MTP device and an SMB share walked at the same
+moment. Every hand-off is gated on a promise, so the tests assert on ordering
+rather than timing. The refresher's queue/lease *dispatch* stays in
+`dapr.refresh-test`, where it is deterministic — driving it through a slow device
+would only buy flakiness. `DAPR_REQUIRE_DEVICE` turns an absent device from a skip
+into a failure, so these cannot silently pass by not running.
+
+Validated before landing by pointing the fixture at Testcontainers samba (a real
+*coordinated* device) rather than shipping tests that had never executed: all four
+pass, and the no-re-listing assertion was confirmed to have teeth — a clean walk
+lists 4 directories, pause+resume totals 4, a resume that ignored the frontier
+would cost 6.
+
+**⏳ The perceptual half still wants a human**, and no CI job can do it: that a
+large library *paints instantly*, that the indicator advances while it scans, and
+that the confirm dialog appears only while a refresh is unfinished. Wants a real
+device with a big library attached to a workstation. Note the automated half
+deliberately never walks the device's own library (the fixture is a temp dir), so
+"how does 10,000 tracks feel" is exactly what remains unanswered.
 
 **Open questions — resolved.** *Pool size*: a fixed small pool, default **2**,
 `:workers` in `config.edn`. One thread per device key was rejected because every
