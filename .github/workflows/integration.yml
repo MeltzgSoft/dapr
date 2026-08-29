@@ -25,8 +25,8 @@ name: Integration
 #
 # So this file stays on GitHub purely as release.yml's gate. Everyday macOS
 # coverage now runs on pull requests and main pushes using the native Forgejo
-# runner from .forgejo/workflows/macos.yml, rather than leaving macOS unproven
-# until a tag is cut.
+# runner from the macOS jobs in .forgejo/workflows/tests.yml, rather than
+# leaving macOS unproven until a tag is cut.
 # The pull_request and push triggers are gone deliberately (FR-2.7): mirror
 # pushes fire GitHub workflows, so leaving them would re-run this whole matrix
 # on every sync.

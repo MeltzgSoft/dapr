@@ -5,8 +5,8 @@ name: CI
 # The OS split follows FR-10.17 literally: windows-latest does not exist here
 # but Windows does, so both Windows legs are RELABELLED (runs-on: windows)
 # rather than dropped. The native Apple-silicon runner now supplies the macOS
-# substitute in .forgejo/workflows/macos.yml on pull requests and pushes to
-# main, so a macOS regression surfaces before merge rather than at tag time.
+# jobs below on pull requests and pushes to main, so a macOS regression
+# surfaces before merge rather than at tag time.
 #
 # .github/workflows/release.yml still gates the release on the full
 # windows/mac/linux matrix (FR-10.4) -- by then linux and Windows have normally
@@ -107,6 +107,25 @@ jobs:
         shell: pwsh
         run: clojure -M:test
 
+  test-macos:
+    # Native Apple-silicon host runner, capacity 1. Homebrew and Clojure are
+    # machine prerequisites provisioned once on the persistent runner.
+    runs-on: macos
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up JDK 25
+        uses: https://github.com/actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '25'
+
+      - name: Check the provisioned Clojure CLI
+        run: clojure -Sdescribe
+
+      - name: Run unit tests
+        run: clojure -M:test
+
   # Browser end-to-end tests (e2e/, see its README). They start the app
   # themselves and drive it in Chromium, which is the only way to exercise the
   # parts of the UI that are not Clojure: that htmx is wired up, that a pushed
@@ -185,7 +204,47 @@ jobs:
             e2e/test-results/
           retention-days: 7
 
-  # Both integration jobs run on the DEVICE runners (FR-4.2, FR-9.9/9.10):
+  # The macOS tier-1 integration job has no device yet. Its MTP tests skip,
+  # while SMB runs against the persistent loopback-only Samba service. The
+  # two device integration jobs below still require the real MTP device.
+  integration-macos:
+    runs-on: macos
+    env:
+      TEST_SMB_GUEST_URL: smb://127.0.0.1/Music/
+      TEST_SMB_AUTH_URL: smb://localhost/Private/
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up JDK 25
+        uses: https://github.com/actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '25'
+
+      - name: Check the persistent native SMB shares
+        shell: bash
+        run: |
+          set -euo pipefail
+          listing="$(/opt/homebrew/opt/samba/bin/smbclient \
+            -L //127.0.0.1 -U 'dapr%Secretpass1!')"
+          for share in Music Private; do
+            grep -qw "$share" <<<"$listing" || {
+              echo "SMB share '$share' is missing; provision the macOS runner's persistent Samba service" >&2
+              exit 1
+            }
+          done
+          echo "Music and Private shares present"
+
+      - name: Check the provisioned Clojure CLI
+        run: clojure -Sdescribe
+
+      # DAPR_REQUIRE_DEVICE stays unset until the physical USB switch makes a
+      # macos-usb runner possible.
+      - name: Run integration tests
+        run: clojure -M:integration
+
+  # Both device integration jobs run on the DEVICE runners (FR-4.2,
+  # FR-9.9/9.10):
   # linux-usb/windows-usb select the executor that can receive the USB
   # controller, and device-mtp is the capability label, because these tests
   # exercise whatever MTP device is attached. The same label goes to
