@@ -856,7 +856,7 @@ Notes / gotchas:
 - [ ] Branch off latest `main` (rebase on `feat/app-settings` if it's a consumer).
 - [ ] `clojure -M:test` green.
 - [ ] `clojure -M:integration` green (SMB via Testcontainers needs Docker; MTP
-      skips without hardware — matches CI's `integration.yml`).
+      skips without hardware — matches `.forgejo/workflows/tests.yml`).
 - [ ] `clojure -M:clj-kondo --lint src dev test test-integration` clean.
 - [ ] `clojure -M:cljfmt check` clean.
 - [ ] Manual smoke via `clojure -M:run` (or REPL `dev/go`).

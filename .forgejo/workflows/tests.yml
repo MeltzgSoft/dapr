@@ -8,10 +8,9 @@ name: CI
 # jobs below on pull requests and pushes to main, so a macOS regression
 # surfaces before merge rather than at tag time.
 #
-# .github/workflows/release.yml still gates the release on the full
-# windows/mac/linux matrix (FR-10.4) -- by then linux and Windows have normally
-# already run here, and macOS on the same commit, so the gate confirms rather
-# than discovers.
+# .github/workflows/release.yml consumes the exact-SHA status posted below, so
+# the integration results from Linux, Windows, and macOS gate releases without
+# repeating the integration matrix on GitHub.
 
 on:
   push:
@@ -204,9 +203,9 @@ jobs:
             e2e/test-results/
           retention-days: 7
 
-  # The macOS tier-1 integration job has no device yet. Its MTP tests skip,
-  # while SMB runs against the persistent loopback-only Samba service. The
-  # two device integration jobs below still require the real MTP device.
+  # The macOS integration job has no device yet, so its MTP tests skip. SMB runs
+  # against the persistent loopback-only Samba service. The two jobs below run
+  # the same suite with the real MTP device attached.
   integration-macos:
     runs-on: macos
     env:
@@ -220,6 +219,9 @@ jobs:
         with:
           distribution: temurin
           java-version: '25'
+
+      - name: Check the provisioned Clojure CLI
+        run: clojure -Sdescribe
 
       - name: Check the persistent native SMB shares
         shell: bash
@@ -235,11 +237,8 @@ jobs:
           done
           echo "Music and Private shares present"
 
-      - name: Check the provisioned Clojure CLI
-        run: clojure -Sdescribe
-
       # DAPR_REQUIRE_DEVICE stays unset until the physical USB switch makes a
-      # macos-usb runner possible.
+      # macos-usb runner possible, so only the MTP tests skip.
       - name: Run integration tests
         run: clojure -M:integration
 
@@ -382,23 +381,24 @@ jobs:
         run: python devicelock.py release
 
   # The release gate's forge half (usb-ci FR-10.9-10.12, TS 6.3): publish the
-  # hardware outcome to the GitHub mirror as a commit status for this SHA, which
-  # release.yml over there requires before publishing. Push runs only -- PR-branch
+  # combined integration outcome to the GitHub mirror as a commit status for
+  # this SHA, which release.yml over there requires before publishing. Push runs only -- PR-branch
   # SHAs need not exist on the mirror, and releases tag main commits. Runs on the
   # general runner: it needs api.github.com, not hardware. Fail closed cuts both
   # ways (FR-10.10): a status that cannot be posted fails THIS job loudly, because
   # a status that silently never lands is a release that silently never unblocks.
   report:
     if: always() && github.event_name == 'push'
-    needs: [integration, integration-windows]
+    needs: [integration, integration-windows, integration-macos]
     runs-on: linux
     env:
       WINDOWS_RESULT: ${{ needs['integration-windows'].result }}
       LINUX_RESULT: ${{ needs.integration.result }}
+      MACOS_RESULT: ${{ needs['integration-macos'].result }}
       STATUS_TOKEN: ${{ secrets.MIRROR_STATUS_TOKEN }}
       TARGET_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_number }}
     steps:
-      - name: Post the hardware outcome to the GitHub mirror
+      - name: Post the integration outcome to the GitHub mirror
         run: |
           set -euo pipefail
           if [ -z "$STATUS_TOKEN" ]; then
@@ -407,7 +407,10 @@ jobs:
             exit 1
           fi
           state=failure
-          [ "$WINDOWS_RESULT" = success ] && [ "$LINUX_RESULT" = success ] && state=success
+          [ "$WINDOWS_RESULT" = success ] \
+            && [ "$LINUX_RESULT" = success ] \
+            && [ "$MACOS_RESULT" = success ] \
+            && state=success
           # The mirror syncs on commit, but this post can still race the SHA's
           # arrival on GitHub (TS 6.3) -- retry, don't fail on the first
           # "No commit found".
@@ -416,7 +419,7 @@ jobs:
               -H "Authorization: Bearer $STATUS_TOKEN" \
               -H "Accept: application/vnd.github+json" \
               "https://api.github.com/repos/$GITHUB_REPOSITORY/statuses/$GITHUB_SHA" \
-              -d "{\"state\":\"$state\",\"context\":\"forge/device-tests\",\"description\":\"windows: $WINDOWS_RESULT, linux: $LINUX_RESULT\",\"target_url\":\"$TARGET_URL\"}")
+              -d "{\"state\":\"$state\",\"context\":\"forge/device-tests\",\"description\":\"windows: $WINDOWS_RESULT, linux: $LINUX_RESULT, macos: $MACOS_RESULT\",\"target_url\":\"$TARGET_URL\"}")
             if [ "$code" = 201 ]; then
               echo "posted $state for $GITHUB_SHA"
               exit 0

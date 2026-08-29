@@ -1,8 +1,8 @@
 name: Release
 
-# On a v#.#.# tag, run the unit + integration suites (the same reusable
-# workflows, and hence the same windows/mac/linux matrix, as CI) and -- only if
-# both pass -- publish two kinds of artifact to a GitHub release:
+# On a v#.#.# tag, require the forge's exact-SHA integration status, run the
+# hosted unit-test matrix, and -- only if both pass -- publish two kinds of
+# artifact to a GitHub release:
 #
 #   dapr-<version>.jar   one jar, every OS. The UI is a local web app, so
 #                        nothing on the classpath ships per-platform natives
@@ -54,10 +54,11 @@ permissions:
 
 jobs:
   # The release gate's GitHub half (usb-ci FR-10.8-10.12). The forge runs the
-  # real-device integration tests and posts the outcome for each main SHA as the
-  # commit status `forge/device-tests` (tests.yml's report job). No status, or a
-  # failed one, blocks the release -- fail closed (FR-10.10), keyed to the exact
-  # commit being released (FR-10.11), never to recency.
+  # integration suite on Linux and Windows with the real device, plus macOS with
+  # MTP skipped, and posts the combined outcome for each main SHA as the commit
+  # status `forge/device-tests` (tests.yml's report job). No status, or a failed
+  # one, blocks the release -- fail closed (FR-10.10), keyed to the exact commit
+  # being released (FR-10.11), never to recency.
   #
   # Outbound-only by design (FR-10.9): GitHub-hosted runners cannot reach the
   # forge behind the home network, so the forge pushes the result here rather
@@ -136,20 +137,16 @@ jobs:
             "workflow_dispatch with override_hardware_gate=true and a reason." >&2
           exit 1
 
-  # Gate the release on the full CI matrix: no jars are built or published unless
-  # the unit + integration suites pass on every OS. These reuse the same
-  # workflows CI runs (windows/mac/linux matrix, native SMB provisioning, etc.).
+  # Keep the hosted unit-test matrix as a release gate. Integration runs on the
+  # forge for Linux, Windows, and macOS; hardware-gate consumes the combined
+  # exact-SHA result posted by tests.yml instead of repeating that matrix here.
   test:
     if: ${{ !inputs.installers_only }}
     uses: ./.github/workflows/test.yml
 
-  integration:
-    if: ${{ !inputs.installers_only }}
-    uses: ./.github/workflows/integration.yml
-
   build:
-    needs: [hardware-gate, test, integration]
-    # `!cancelled()` so this still runs when the three above are *skipped* by a
+    needs: [hardware-gate, test]
+    # `!cancelled()` so this still runs when the two above are *skipped* by a
     # smoke build, and the failure check so a real release cannot slip past a
     # gate that actually ran and said no.
     if: ${{ !cancelled() && !contains(needs.*.result, 'failure') }}

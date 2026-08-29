@@ -5,11 +5,12 @@
   `clojure -X:test`).
 
   The :once fixture picks its SMB backend by OS and by whether one was handed to
-  it, because the runners differ (see .forgejo/workflows/tests.yml, integration.yml):
+  it, because the runners differ (see .forgejo/workflows/tests.yml):
 
-    - Forge CI: TEST_SMB_GUEST_URL/TEST_SMB_AUTH_URL name two samba sidecars, and
-      the fixture starts nothing. Forge jobs get no docker socket (usb-ci
-      #22/NFR-5), so Testcontainers cannot run there at all.
+    - Forge CI: TEST_SMB_GUEST_URL/TEST_SMB_AUTH_URL point at persistent native
+      shares on the host-mode Linux and macOS runners, and the fixture starts
+      nothing. Those jobs get no docker socket, so Testcontainers cannot run
+      there at all.
     - Linux otherwise: start a dperson/samba server in a Docker container via
       Testcontainers, so no host setup is needed. Bound to the host's port 445
       (jcifs ignores a non-default SMB port, so a random mapped port would not
@@ -21,12 +22,10 @@
       needs GUI-granted Full Disk Access for smbd), so the fixture authenticates
       every host — the anonymous code path is exercised by the Linux run.
 
-      This path serves both Windows runners. On GitHub the workflow provisions
-      the shares per job (smb-setup-windows.ps1 on a throwaway runner); on the
-      forge's win-runner they are provisioned once as admin, because that runner
-      is host mode, its service runs non-admin, and its machine state persists
-      (usb-ci docs/device-runners.md). The fixture cannot tell the difference,
-      which is the point.
+      On the forge's persistent Windows and macOS runners the shares are
+      provisioned once as admin, because the runner services are non-admin and
+      their machine state persists. The fixture only needs the URLs and cannot
+      tell how the native server was provisioned, which is the point.
 
   Either way there is no graceful skip: if the Linux container can't start, or the
   native shares aren't reachable, the tests fail rather than silently pass."
@@ -46,11 +45,10 @@
 ;; the anonymous and authenticated connections apart. With Testcontainers, and on the
 ;; native macOS/Windows servers, that is one server on port 445 under two names.
 ;;
-;; The forge runs jobs in containers with no docker socket (usb-ci #22/NFR-5), so
-;; Testcontainers cannot work there and two samba sidecars supply the server instead;
-;; TEST_SMB_GUEST_URL/TEST_SMB_AUTH_URL point at them (.forgejo/workflows/tests.yml).
-;; Each sidecar declares BOTH shares, so enumeration against the guest host still sees
-;; Music and Private. Unset locally, so the zero-setup Testcontainers path is unchanged.
+;; The Forge integration jobs run in host mode with no docker socket, so
+;; Testcontainers cannot work there; TEST_SMB_GUEST_URL/TEST_SMB_AUTH_URL point
+;; at the persistent native shares instead (.forgejo/workflows/tests.yml). Unset
+;; locally, so the zero-setup Testcontainers path is unchanged.
 ;; Public because the tag integration test shares this fixture and its URLs.
 (def guest-url (or (System/getenv "TEST_SMB_GUEST_URL") "smb://127.0.0.1/Music/"))
 (def auth-url  (or (System/getenv "TEST_SMB_AUTH_URL")  "smb://localhost/Private/"))
