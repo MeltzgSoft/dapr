@@ -6,9 +6,10 @@ name: Test
 # so leaving them would re-run this whole 3-OS matrix on every sync.
 on:
   # Callable from release.yml so the release still validates on the full
-  # windows/mac/linux matrix. Everyday macOS coverage now runs on the native
-  # Forgejo runner from .forgejo/workflows/macos.yml; this callable definition
-  # remains the GitHub-hosted release gate.
+  # windows/mac/linux matrix. Everyday macOS coverage now runs on pull requests
+  # and main pushes using the native Forgejo runner from
+  # .forgejo/workflows/macos.yml; this callable definition remains the
+  # GitHub-hosted release gate.
   # Reusable-workflow expansion is public-repos-only (FR-10.16) -- this repo is
   # public, and both caller and callee live here, so no cross-instance
   # reference disables it.

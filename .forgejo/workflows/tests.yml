@@ -5,8 +5,8 @@ name: CI
 # The OS split follows FR-10.17 literally: windows-latest does not exist here
 # but Windows does, so both Windows legs are RELABELLED (runs-on: windows)
 # rather than dropped. The native Apple-silicon runner now supplies the macOS
-# substitute in .forgejo/workflows/macos.yml on every push to main, so a macOS
-# regression still surfaces at the commit rather than at the tag.
+# substitute in .forgejo/workflows/macos.yml on pull requests and pushes to
+# main, so a macOS regression surfaces before merge rather than at tag time.
 #
 # .github/workflows/release.yml still gates the release on the full
 # windows/mac/linux matrix (FR-10.4) -- by then linux and Windows have normally

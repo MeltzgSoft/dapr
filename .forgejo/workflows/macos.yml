@@ -6,10 +6,12 @@ name: macOS
 # only Samba shares are machine prerequisites provisioned once on the runner.
 #
 # Release tags still run the full GitHub-hosted matrix from release.yml. This
-# workflow replaces only the old GitHub push-to-main wrapper, so a regression
-# still surfaces on the commit that reached main rather than at tag time.
+# workflow moves everyday macOS coverage to Forgejo and runs beside the other
+# tier-1 jobs on pull requests and pushes to main.
 on:
   push:
+    branches: [main]
+  pull_request:
     branches: [main]
   workflow_dispatch:
 
