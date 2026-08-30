@@ -27,16 +27,16 @@
         attrs (html/poll state :status "7")]
     (is (= "/fragments/status?d=7" (:hx-get attrs)))
     (testing "the server's notification is the trigger; the timer is the safety net"
-      (is (= "sse:region-status, every 15s" (:hx-trigger attrs))))
+      (is (= "region-status from:body, every 15s" (:hx-trigger attrs))))
     (testing "a morph swap, so a re-render keeps what the DOM owns — a running
               spinner animation, a scroll position — rather than replacing it"
-      (is (= "morph:outerHTML" (:hx-swap attrs))))
+      (is (= "outerMorph" (:hx-swap attrs))))
     (testing "the fallback interval is configured, not compiled in"
-      (is (= "sse:region-status, every 3s"
+      (is (= "region-status from:body, every 3s"
              (:hx-trigger (html/poll (state/set-ui state/initial-state {:fallback-seconds 3})
                                      :status "7")))))
     (testing "config.edn saying nothing falls back to the default"
-      (is (= (format "sse:region-status, every %ds" (:fallback-seconds state/default-ui))
+      (is (= (format "region-status from:body, every %ds" (:fallback-seconds state/default-ui))
              (:hx-trigger (html/poll (state/set-ui state/initial-state nil) :status "7")))))
     (testing "view parameters ride along, so a re-fetch keeps the sort and page"
       (is (= "/fragments/table?sort=title&page=2&d=7"

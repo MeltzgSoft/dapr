@@ -20,7 +20,7 @@ test.describe('server-pushed updates', () => {
   test('regions listen for their own notification, and keep the timer as a fallback', async ({ page }) => {
     await page.goto('/');
     const trigger = await page.locator('#track-table').getAttribute('hx-trigger');
-    expect(trigger).toMatch(/^sse:region-table, every \d+s$/);
+    expect(trigger).toMatch(/^region-table from:body, every \d+s$/);
   });
 
   test('a change the page never asked for still reaches it', async ({ page }) => {

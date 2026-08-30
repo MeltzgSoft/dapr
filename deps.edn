@@ -57,21 +57,9 @@
   ;; the scripts on the classpath (each version read from its WebJar's
   ;; pom.properties) and serves them from /assets/.
   org.webjars.npm/htmx.org     {:mvn/version "4.0.0"}
-  ;; The SSE extension, for the pushed region notifications (dapr.web.events).
-  ;; Deliberately NOT the copy bundled at htmx.org's own dist/ext/sse.js: that
-  ;; one is the htmx 1.x extension, left in the npm package for compatibility.
-  ;; It opens the connection under htmx 2 but never fires `hx-trigger="sse:…"`,
-  ;; so every region silently fell back to its timer — which looks exactly like
-  ;; a slow app rather than a broken one. htmx 2 moved extensions to packages of
-  ;; their own; this is that package.
-  org.webjars.npm/htmx-ext-sse {:mvn/version "2.2.4"}
-  ;; Idiomorph, as htmx's `morph` swap. The live regions (status strip, jobs,
-  ;; log) are re-rendered as often as once a second while a scan runs, and
-  ;; replacing an element throws away the state the DOM owns rather than the
-  ;; server: a CSS animation restarts from frame 0, and a scroll position resets.
-  ;; Morphing patches the existing nodes in place instead, so the spinner keeps
-  ;; spinning and the log keeps the reader's place.
-  org.webjars.npm/idiomorph     {:mvn/version "0.7.4"}
+  ;; The SSE extension, for the pushed region notifications (dapr.web.events),
+  ;; is served from htmx.org's own htmx 4 WebJar. htmx 4 also includes the
+  ;; `morph` swap style in core, so no separate idiomorph extension is loaded.
   ;; Command-line parsing for dapr.main's --port/--host/--no-browser, so the flags
   ;; are validated and the --help summary generated rather than hand-rolled.
   org.clojure/tools.cli        {:mvn/version "1.4.256"}}

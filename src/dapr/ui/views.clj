@@ -425,7 +425,10 @@
         allowed (lib/roots-device-key (get-in state [:editor :roots]))]
     [:fieldset#browser-panel
      (if (device-views/browser-polls? browser)
-       (html/poll state :browser (digest/digest state nil :browser))
+       (assoc (html/poll state :browser (digest/digest state nil :browser))
+              ;; Browser loading states need a fresh htmx timer after each
+              ;; directory change; morphing preserves the old element state.
+              :hx-swap "outerHTML")
        {})
      [:legend "Browse for a folder"]
      (device-views/browser-content allowed browser)
@@ -595,7 +598,7 @@
 (defn page
   "The whole document. The script URLs come from dapr.web.assets rather than being
   hard-coded, so the view stays free of classpath concerns."
-  [state view {:keys [htmx-src htmx-sse-src idiomorph-src]}]
+  [state view {:keys [htmx-src htmx-sse-src]}]
   [:html {:lang "en" :data-theme (fmt/theme-attr (get-in state [:settings :theme] :system))}
    [:head
     [:meta {:charset "utf-8"}]
@@ -603,15 +606,12 @@
     [:title "Dapr — music library sync"]
     [:link {:rel "stylesheet" :href "/dapr.css"}]
     [:script {:src htmx-src :defer true}]
-    [:script {:src htmx-sse-src :defer true}]
-    [:script {:src idiomorph-src :defer true}]]
+    [:script {:src htmx-sse-src :defer true}]]
    ;; One event stream for the page. The server pushes "region X moved" and the
    ;; regions below re-fetch themselves; see dapr.web.events.
-   ;; `morph` is on the body so every region inherits it: the live ones are
-   ;; re-rendered as often as once a second, and replacing them would discard
-   ;; what the DOM owns rather than the server — a running CSS animation, a
-   ;; scroll position, a focused input.
-   [:body {:hx-ext "sse,morph" :sse-connect "/events"}
+   ;; htmx 4's SSE extension dispatches the named server event on this body, and
+   ;; each live region listens with `from:body`.
+   [:body {:hx-sse:connect "/events"}
     [:div.app
      (topbar state)
      (workspace state view)

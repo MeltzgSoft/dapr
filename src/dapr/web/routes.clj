@@ -328,8 +328,7 @@
          (str "<!doctype html>"
               (h/html (views/page @state-atom (view-of params)
                                   {:htmx-src      (assets/htmx-src)
-                                   :htmx-sse-src  (assets/htmx-sse-src)
-                                   :idiomorph-src (assets/idiomorph-src)}))))
+                                   :htmx-sse-src  (assets/htmx-sse-src)}))))
         (resp/content-type "text/html; charset=utf-8"))))
 
 ;; --- router ------------------------------------------------------------------

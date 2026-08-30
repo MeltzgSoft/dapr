@@ -72,10 +72,10 @@
       (is (str/includes? body "src=\"/assets/htmx-sse.js"))
       (is (not (str/includes? body "//unpkg.com"))))
     (testing "the page opens one event stream for its regions to listen on"
-      (is (str/includes? body "sse-connect=\"/events\"")))
+      (is (str/includes? body "hx-sse:connect=\"/events\"")))
     (testing "a region re-fetches on its own notification, with the timer only
               as a fallback"
-      (is (re-find #"hx-trigger=\"sse:region-table, every \d+s\"" body))))
+      (is (re-find #"hx-trigger=\"region-table from:body, every \d+s\"" body))))
 
   (testing "an unreachable library can be seen but not chosen"
     (is (re-find #"<option disabled=\"disabled\"[^>]*value=\"2\"" (:body (GET (app) "/"))))))
