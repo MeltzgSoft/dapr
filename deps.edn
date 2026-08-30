@@ -10,7 +10,7 @@
   ;; the smb:// reader backs one with a seekable channel to read embedded tags
   ;; from a few KB of header rather than transferring whole files (see
   ;; dapr.device.smb.tag).
-  io.github.meltzg/melt-jfs {:mvn/version "0.2.2"}
+  io.github.meltzg/melt-jfs {:mvn/version "0.2.3"}
   ;; SMB/CIFS share support. smb-nio registers a java.nio "smb://"
   ;; FileSystemProvider (jcifs-ng backed), so the sync engine reaches SMB shares
   ;; through the same NIO code as file:// and mtp://. java-keyring stores share
@@ -56,7 +56,7 @@
   ;; dependency and lands in the uberjar at build time. dapr.web.assets finds
   ;; the scripts on the classpath (each version read from its WebJar's
   ;; pom.properties) and serves them from /assets/.
-  org.webjars.npm/htmx.org     {:mvn/version "2.0.10"}
+  org.webjars.npm/htmx.org     {:mvn/version "4.0.0"}
   ;; The SSE extension, for the pushed region notifications (dapr.web.events).
   ;; Deliberately NOT the copy bundled at htmx.org's own dist/ext/sse.js: that
   ;; one is the htmx 1.x extension, left in the npm package for compatibility.
