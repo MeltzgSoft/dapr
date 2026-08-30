@@ -5,7 +5,7 @@
             [dapr.device.tag :as tag])
   (:import (java.nio.file Files OpenOption Path)
            (java.nio.file.attribute FileAttribute)
-           (org.meltzg.fs.mtp.audio AudioTags)))
+           (org.meltzg.audio AudioTags)))
 
 (defn- temp-file ^Path [ext ^bytes content]
   (let [p (Files/createTempFile "dapr-smb-tag-unit" ext (make-array FileAttribute 0))]

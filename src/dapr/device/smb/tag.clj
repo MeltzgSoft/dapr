@@ -5,7 +5,7 @@
 
   jaudiotagger reads only a java.io.File, so it can't touch an smb:// NIO path
   without staging a whole-file local copy. Instead we reuse melt-jfs's
-  device-agnostic header parsers (org.meltzg.fs.mtp.audio.AudioTagReaders), which
+  device-agnostic header parsers (org.meltzg.audio.AudioTagReaders), which
   parse FLAC/MP3/MP4/Ogg-Opus/WAV tags over a RangedByteSource — an interface that
   asks only for the byte ranges each format's header actually needs. We back that
   source with smb-nio's SeekableByteChannel, whose position() honours seeks (jcifs
@@ -23,7 +23,7 @@
   (:import (java.nio ByteBuffer)
            (java.nio.channels SeekableByteChannel)
            (java.nio.file Files OpenOption Path StandardOpenOption)
-           (org.meltzg.fs.mtp.audio AudioTagReaders AudioTags RangedByteSource)))
+           (org.meltzg.audio AudioTagReaders AudioTags RangedByteSource)))
 
 (defn channel-source
   "A melt-jfs RangedByteSource that reads byte ranges from the already-open
