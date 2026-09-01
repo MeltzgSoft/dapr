@@ -30,6 +30,8 @@ wipes it first so each run starts with no libraries and an empty cache:
   are never opened, let alone edited**;
 - `.tmp/music` is a seeded four-track library (zero-content `.mp3` files two
   folders deep, so the path-derived tags give an artist and an album);
+- `.tmp/virtual-music` is a separate 420-track library used to prove the table
+  keeps a bounded DOM while scrolling in both directions;
 - `.tmp/sink` is the empty directory the sync test copies into.
 
 Port 7374, deliberately not the app's usual 7373, so a `clojure -M:run` you have

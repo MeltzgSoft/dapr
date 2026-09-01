@@ -18,6 +18,8 @@ export const TMP = path.join(E2E_ROOT, '.tmp');
 export const CONFIG_DIR = path.join(TMP, 'config');
 /** A seeded music library, the source of every sync test. */
 export const MUSIC_DIR = path.join(TMP, 'music');
+/** A larger source used only by the virtual-scroll browser test. */
+export const VIRTUAL_MUSIC_DIR = path.join(TMP, 'virtual-music');
 /** An empty directory the sync tests copy into. */
 export const SINK_DIR = path.join(TMP, 'sink');
 
@@ -42,17 +44,43 @@ export const TRACKS = [
   { rel: 'Bob/Solo/04 Fourth.mp3', bytes: 4000, artist: 'Bob', album: 'Solo', title: '04 Fourth' },
 ];
 
+export const VIRTUAL_TRACK_COUNT = 420;
+
+/**
+ * More than two virtual windows, with deliberately mixed-case facet names.
+ * Titles are globally unique and zero-padded so a Title sort gives the scroll
+ * test an unambiguous first and last row.
+ */
+export const VIRTUAL_TRACKS = Array.from({ length: VIRTUAL_TRACK_COUNT }, (_, offset) => {
+  const number = offset + 1;
+  const artists = ['alpha', 'Beta', 'charlie'];
+  const albums = ['apple', 'middle', 'Zebra'];
+  const artist = artists[offset % artists.length];
+  // Deliberately cross artists with every album. Keeping artist and album in
+  // lockstep would let the natural album order masquerade as an Artist sort.
+  const album = albums[(Math.floor(offset / artists.length) + offset) % albums.length];
+  const title = `${String(number).padStart(4, '0')} Virtual`;
+  return { rel: `${artist}/${album}/${title}.mp3`, bytes: 1, artist, album, title };
+});
+
 /**
  * Create the seeded library and the empty sink. Idempotent: the Playwright
  * config module is loaded once per worker process, so this must be safe to run
  * again — it never removes anything (that is `pretest`'s job, once per run).
  */
 export function seed(): void {
-  for (const dir of [CONFIG_DIR, MUSIC_DIR, SINK_DIR]) {
+  for (const dir of [CONFIG_DIR, MUSIC_DIR, VIRTUAL_MUSIC_DIR, SINK_DIR]) {
     fs.mkdirSync(dir, { recursive: true });
   }
   for (const track of TRACKS) {
     const file = path.join(MUSIC_DIR, track.rel);
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    if (!fs.existsSync(file) || fs.statSync(file).size !== track.bytes) {
+      fs.writeFileSync(file, Buffer.alloc(track.bytes));
+    }
+  }
+  for (const track of VIRTUAL_TRACKS) {
+    const file = path.join(VIRTUAL_MUSIC_DIR, track.rel);
     fs.mkdirSync(path.dirname(file), { recursive: true });
     if (!fs.existsSync(file) || fs.statSync(file).size !== track.bytes) {
       fs.writeFileSync(file, Buffer.alloc(track.bytes));

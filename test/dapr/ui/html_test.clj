@@ -20,7 +20,7 @@
 (deftest fragment-url-test
   (testing "a poll carries the digest it is checking against, plus the view it renders"
     (is (= "/fragments/table?sort=title&d=99"
-           (html/fragment-url :table "99" {:sort "title" :page nil})))))
+           (html/fragment-url :table "99" {:sort "title" :start nil})))))
 
 (deftest poll-test
   (let [state (state/set-ui state/initial-state {:fallback-seconds 15})
@@ -38,9 +38,9 @@
     (testing "config.edn saying nothing falls back to the default"
       (is (= (format "region-status from:body, every %ds" (:fallback-seconds state/default-ui))
              (:hx-trigger (html/poll (state/set-ui state/initial-state nil) :status "7")))))
-    (testing "view parameters ride along, so a re-fetch keeps the sort and page"
-      (is (= "/fragments/table?sort=title&page=2&d=7"
-             (:hx-get (html/poll state :table "7" {:sort "title" :page 2})))))))
+    (testing "view parameters ride along, so a re-fetch keeps sort and window"
+      (is (= "/fragments/table?sort=title&start=200&d=7"
+             (:hx-get (html/poll state :table "7" {:sort "title" :start 200})))))))
 
 (deftest classes-test
   (is (= "job failed" (html/classes "job" "failed")))

@@ -5,6 +5,9 @@
  ;; dropped event stream, not the mechanism (see dapr.web.events).
  :dapr/state    {:cache #ig/ref :dapr/cache
                  :ui    {:fallback-seconds 15}}
+ ;; Bounded derived-order cache for the virtual track table. It holds only track
+ ;; keys and is invalidated naturally by the catalog version in each cache key.
+ :dapr/track-index {:max-entries 16}
  ;; Configure logging once the state atom exists but before anything starts
  ;; scanning, so file + live-log output captures everything from launch.
  :dapr/log      {:cache #ig/ref :dapr/cache :state-atom #ig/ref :dapr/state}
@@ -28,6 +31,7 @@
  ;; DAPR_HOST / DAPR_PORT / DAPR_NO_BROWSER environment variables.
  :dapr/server {:state-atom     #ig/ref :dapr/state
                :cache          #ig/ref :dapr/cache
+               :track-index    #ig/ref :dapr/track-index
                :log            #ig/ref :dapr/log
                :refresher      #ig/ref :dapr/refresher
                :devices        #ig/ref :dapr/devices

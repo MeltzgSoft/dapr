@@ -297,7 +297,12 @@ label { display: inline-flex; align-items: center; gap: 6px; }
   border-bottom: 1px solid var(--border);
 }
 
-.table-scroll { overflow: auto; flex: 1; min-height: 0; }
+.table-scroll {
+  overflow: auto;
+  flex: 1;
+  min-height: 0;
+  overflow-anchor: none;
+}
 
 table.tracks {
   width: 100%;
@@ -341,6 +346,20 @@ table.tracks td {
   white-space: nowrap;
 }
 
+/* A constant row height lets the two spacer rows stand in for every track that
+ * is outside the DOM window. Keep this value in sync with track_window/transforms
+ * and virtual-tracks.js. */
+table.tracks tr.track-row { height: 31px; }
+table.tracks tr.track-row td { height: 31px; }
+
+table.tracks tr.virtual-spacer td {
+  padding: 0;
+  border: 0;
+  pointer-events: none;
+}
+
+#track-table.loading-window .table-scroll { cursor: progress; }
+
 table.tracks tbody tr:hover td { background: var(--surface-2); }
 
 table.tracks tr.sink-only td { color: var(--danger); }
@@ -353,8 +372,6 @@ table.tracks .empty { padding: 24px 12px; color: var(--muted); text-align: cente
 
 input[type="checkbox"], input[type="radio"] { accent-color: var(--accent); }
 input[type="checkbox"] { width: 15px; height: 15px; }
-
-.pager { display: flex; align-items: center; gap: 6px; }
 
 /* --- controls / plan ------------------------------------------------------ */
 

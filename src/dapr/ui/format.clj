@@ -49,11 +49,6 @@
   [{:keys [used budget]}]
   (boolean (and used budget (> used budget))))
 
-(defn- distinct-sorted
-  "Non-nil values of `xs`, distinct and sorted."
-  [xs]
-  (->> xs (remove nil?) distinct sort vec))
-
 (defn duration-mmss
   "Format a millisecond duration as minutes:seconds (m:ss, zero-padded seconds),
   e.g. 210000 -> \"3:30\". nil (unknown duration) formats as blank. Minutes are not
@@ -79,6 +74,12 @@
   [a b]
   (let [c (compare (sort-key a) (sort-key b))]
     (if (and (zero? c) (string? a) (string? b)) (compare a b) c)))
+
+(defn- distinct-sorted
+  "Non-nil values of `xs`, distinct and sorted with the same comparator used by
+  the track-table columns."
+  [xs]
+  (->> xs (remove nil?) distinct (sort compare-field) vec))
 
 (defn artists
   "Sorted distinct artists present in `catalog` (a key->track map). Tracks with no
@@ -301,6 +302,43 @@
 
 ;; --- track table -------------------------------------------------------------
 
+(defn- track-row
+  [{:keys [source-catalog sink-catalog selected capacity settings]} t]
+  (let [k          (:key t)
+        free       (:free capacity)
+        handling   (get settings :sink-only-handling :keep)
+        locked?    (contains? #{:keep :add-to-source} handling)
+        in-source? (contains? source-catalog k)
+        on?        (contains? selected k)]
+    {:key             k
+     :disc-number     (:disc-number t)
+     :track-number    (:track-number t)
+     :title           (:title t)
+     :duration-millis (:duration-millis t)
+     :artist          (:artist t)
+     :album           (:album t)
+     :genre           (:genre t)
+     :size            (:size t)
+     :sink-rel        (:rel (get sink-catalog k))
+     :in-source?      in-source?
+     :on?             (if (and (not in-source?) locked?) true on?)
+     :disabled?       (cond
+                        (not in-source?) locked?
+                        on?              false
+                        :else            (not (cap/row-fits?
+                                               k (:size t) selected sink-catalog free)))}))
+
+(defn track-rows-for-keys
+  "Project dynamic display rows for `keys` only, preserving their order. Missing
+  keys are omitted, which makes an in-flight virtual-window response harmless if
+  a background catalog refresh removed a track before it rendered."
+  [{:keys [source-catalog sink-catalog] :as state} keys]
+  (into []
+        (keep (fn [k]
+                (some->> (or (get source-catalog k) (get sink-catalog k))
+                         (track-row state))))
+        keys))
+
 (defn track-rows
   "Resolve the union of the source and sink catalogs into a vector of row maps for
   the track table, one per track: {:key :disc-number :track-number :title
@@ -316,42 +354,22 @@
   handling they are retained regardless of selection, so their checkbox is locked
   on (`:on? true`, `:disabled? true`); under :delete the checkbox spares them from
   deletion when ticked."
-  [{:keys [source-catalog sink-catalog selected capacity filter settings]}]
-  (let [free     (:free capacity)
-        handling (get settings :sink-only-handling :keep)
-        locked?  (contains? #{:keep :add-to-source} handling)]
-    (->> (vals (filter-catalog (merge sink-catalog source-catalog) filter))
-         (mapv (fn [t]
-                 (let [k          (:key t)
-                       in-source? (contains? source-catalog k)
-                       on?        (contains? selected k)]
-                   {:key             k
-                    :disc-number     (:disc-number t)
-                    :track-number    (:track-number t)
-                    :title           (:title t)
-                    :duration-millis (:duration-millis t)
-                    :artist          (:artist t)
-                    :album           (:album t)
-                    :genre           (:genre t)
-                    :size            (:size t)
-                    :sink-rel        (:rel (get sink-catalog k))
-                    :in-source?      in-source?
-                    :on?             (if (and (not in-source?) locked?) true on?)
-                    :disabled?       (cond
-                                       (not in-source?) locked?
-                                       on?              false
-                                       :else            (not (cap/row-fits?
-                                                              k (:size t) selected sink-catalog free)))}))))))
+  [{:keys [source-catalog sink-catalog filter] :as state}]
+  (mapv (partial track-row state)
+        (vals (filter-catalog (merge sink-catalog source-catalog) filter))))
 
 (defn- default-order
-  "Sort key for the table's natural order: disc, track, album, artist, then the
-  track's relative path as a tiebreak (it is the last element of :key)."
+  "Sort key for the table's natural order: artist, album, disc, track, then the
+  track's relative path as a tiebreak (it is the last element of :key). Artist
+  and album use the same case-insensitive, case-sensitive-tiebreak order as their
+  column headers and facet selectors."
   [row]
-  [(:disc-number row) (:track-number row)
-   (sort-key (:album row)) (sort-key (:artist row)) (peek (:key row))])
+  [(sort-key (:artist row)) (:artist row)
+   (sort-key (:album row)) (:album row)
+   (:disc-number row) (:track-number row) (peek (:key row))])
 
 (defn sort-rows
-  "Order `rows` for display. With no `col`, the natural disc/track/album/artist
+  "Order `rows` for display. With no `col`, the natural artist/album/disc/track
   order; with one, by that field alone using compare-field (case-insensitive, nil
   first), reversed for `:desc`. The natural order is the tiebreak in neither case —
   a single-field sort is what a clicked header means, and Clojure's sort is stable,
@@ -362,20 +380,3 @@
       (= :desc dir) reverse
       :always vec)
     (vec (sort-by default-order rows))))
-
-(defn page-count
-  "How many pages of `page-size` rows `total` rows make, at least 1 (an empty
-  table still has a first page to show)."
-  [total page-size]
-  (max 1 (long (Math/ceil (/ (double (max 0 total)) (max 1 page-size))))))
-
-(defn page-rows
-  "The `page`-th (0-based) slice of `page-size` rows from `rows`, clamped into
-  range so a page that has shrunk out from under the client shows its last page
-  rather than nothing."
-  [rows page page-size]
-  (let [size  (max 1 page-size)
-        pages (page-count (count rows) size)
-        page  (-> (or page 0) (max 0) (min (dec pages)))
-        start (* page size)]
-    (subvec (vec rows) start (min (count rows) (+ start size)))))

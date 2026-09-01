@@ -6,8 +6,8 @@
             [clojure.test :refer [deftest is testing]]
             [dapr.db.cache :as cache]
             [dapr.state :as state]
+            [dapr.track-window.transforms :as track-window]
             [dapr.ui.digest :as digest]
-            [dapr.ui.views :as views]
             [dapr.web.routes :as routes])
   (:import (java.net URLEncoder)
            (java.nio.charset StandardCharsets)))
@@ -67,9 +67,10 @@
       (doseq [id ["workspace" "sync-bar" "capacity" "facets" "artists" "albums"
                   "track-table" "controls" "status-bar" "overlay" "activity"]]
         (is (str/includes? body (str "id=\"" id "\"")) id)))
-    (testing "htmx and its SSE extension are loaded from the app, not a CDN"
+    (testing "htmx, SSE and the virtual-scroll controller are loaded locally"
       (is (str/includes? body "src=\"/assets/htmx.js"))
       (is (str/includes? body "src=\"/assets/htmx-sse.js"))
+      (is (str/includes? body "src=\"/virtual-tracks.js\""))
       (is (not (str/includes? body "//unpkg.com"))))
     (testing "the page opens one event stream for its regions to listen on"
       (is (str/includes? body "hx-sse:connect=\"/events\"")))
@@ -84,6 +85,8 @@
   (let [handler (app)]
     (testing "the stylesheet is served from the classpath"
       (is (= 200 (:status (GET handler "/dapr.css")))))
+    (testing "the virtual-scroll controller is served from the classpath"
+      (is (= 200 (:status (GET handler "/virtual-tracks.js")))))
     (testing "every script the page loads is served out of the WebJar, cached by
               its versioned URL"
       (doseq [asset ["htmx.js" "htmx-sse.js"]]
@@ -105,7 +108,7 @@
 (deftest fragment-polling-test
   (let [state-atom (atom (test-state))
         handler    (app state-atom {})
-        view       {:sort nil :dir :asc :page 0}]
+        view       {:sort nil :dir :asc :start 0}]
     (testing "a poll carrying the digest it already shows gets nothing back"
       (is (= 204 (:status (GET handler "/fragments/table"
                             (str "d=" (digest/digest @state-atom view :table)))))))
@@ -161,25 +164,69 @@
       (POST handler "/actions/filter" "col=artist")
       (is (nil? (get-in @state-atom [:filter :artist]))))))
 
-(deftest paging-test
-  (let [many       (into {} (for [i (range (* 2 views/page-size))]
+(deftest facet-sort-order-test
+  (let [catalog    (into {} [(track "charlie" "Zebra" "One" 10)
+                             (track "Beta" "middle" "Two" 10)
+                             (track "alpha" "apple" "Three" 10)])
+        state-atom (atom (-> (test-state) (state/set-catalogs catalog {} 1000000)))
+        handler    (app state-atom {})]
+    (testing "artist and album fragments follow their table columns' case-insensitive order"
+      (let [artists (:body (GET handler "/fragments/artists"))
+            albums  (:body (GET handler "/fragments/albums"))]
+        (is (< (str/index-of artists "alpha")
+               (str/index-of artists "Beta")
+               (str/index-of artists "charlie")))
+        (is (< (str/index-of albums "apple")
+               (str/index-of albums "middle")
+               (str/index-of albums "Zebra")))))))
+
+(deftest virtual-window-test
+  (let [many       (into {} (for [i (range (* 2 track-window/window-size))]
                               (track "Alice" "One" (format "Song %04d" i) 10)))
         state-atom (atom (-> (test-state) (state/set-catalogs many {} 100000000)))
         handler    (app state-atom {})]
-    (testing "a long table is paged rather than poured into the page whole"
+    (testing "a long table renders one bounded window plus spacer rows"
       (let [body (:body (GET handler "/fragments/table"))]
-        (is (str/includes? body (format "Tracks (%d)" (* 2 views/page-size))))
-        (is (= views/page-size (count (re-seq #"type=\"checkbox\"" body))))
+        (is (str/includes? body (format "Tracks (%d)" (* 2 track-window/window-size))))
+        (is (= track-window/window-size (count (re-seq #"type=\"checkbox\"" body))))
         (is (str/includes? body "Song 0000"))
-        (is (not (str/includes? body (format "Song %04d" views/page-size))))))
-    (testing "the page number is a URL parameter, held nowhere on the server"
-      (let [body (:body (GET handler "/fragments/table" "page=1"))]
-        (is (str/includes? body (format "Song %04d" views/page-size)))
+        (is (not (str/includes? body (format "Song %04d" track-window/window-size))))
+        (is (str/includes? body "virtual-spacer bottom"))))
+    (testing "a body-only range request moves the window without returning the shell"
+      (let [body (:body (GET handler "/fragments/table-body"
+                          (str "start=" track-window/window-size)))]
+        (is (str/starts-with? body "<tbody"))
+        (is (= track-window/window-size (count (re-seq #"type=\"checkbox\"" body))))
+        (is (str/includes? body (format "Song %04d" track-window/window-size)))
         (is (not (str/includes? body "Song 0000")))))
-    (testing "narrowing the table returns to its first page — page 1 of a list
-              that no longer exists would just look empty"
-      (let [body (:body (POST handler "/actions/filter" "col=album&value=One&page=1"))]
+    (testing "narrowing the table returns to the beginning of the new list"
+      (let [body (:body (POST handler "/actions/filter" "col=album&value=One&start=200"))]
         (is (str/includes? body "Song 0000"))))))
+
+(deftest virtual-window-preserves-column-sort-test
+  (let [total      450
+        many       (into {}
+                         (for [number (range 1 (inc total))
+                               :let [title (format "Title %04d" (- (inc total) number))
+                                     [k t] (track "Artist" "Album" title 10)]]
+                           [k (assoc t :track-number number)]))
+        state-atom (atom (-> (test-state) (state/set-catalogs many {} 100000000)))
+        handler    (app state-atom {})]
+    (testing "a later range uses the requested column, not natural disc/track order"
+      (let [body (:body (GET handler "/fragments/table-body"
+                          "sort=title&dir=asc&start=200"))]
+        (is (str/includes? body "data-sort=\"title\""))
+        (is (str/includes? body "data-dir=\"asc\""))
+        (is (= "Title 0201" (re-find #"Title \d{4}" body)))))))
+
+(deftest reset-sort-action-test
+  (let [handler (app)]
+    (testing "a sorted table offers a reset to the natural order"
+      (let [body (:body (GET handler "/fragments/table" "sort=title&dir=desc&start=0"))]
+        (is (str/includes? body "Reset sort"))
+        (is (str/includes? body "Restore Artist, Album, Disc, Track order"))))
+    (testing "the natural-order table does not offer a redundant reset"
+      (is (not (str/includes? (:body (GET handler "/fragments/table")) "Reset sort"))))))
 
 (deftest toggle-facet-test
   (let [state-atom (atom (test-state))

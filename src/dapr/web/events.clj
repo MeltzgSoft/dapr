@@ -4,11 +4,11 @@
   What is pushed is a *hint*, never markup: `event: region-table` and an empty
   body, meaning \"the data behind the track table moved\". The element re-fetches
   itself from the fragment endpoint it already had, still carrying its own digest
-  and its own sort/page. That split is deliberate:
+  and its own sort/window. That split is deliberate:
 
   - the server keeps no per-client state beyond the open channels — it does not
     need to know what any client is showing, which is exactly what pushing HTML
-    would force it to know (the table's markup depends on a sort and a page only
+    would force it to know (the table's markup depends on a sort and a window only
     the client has);
   - `/fragments/*` stays the single rendering path, so what the browser gets is
     the same thing the route tests exercise;
@@ -56,7 +56,7 @@
 (defn region-digests
   "Every pollable region's digest for `state`, taken with no view parameters. What
   is broadcast is that a region's underlying data moved — not what any particular
-  client should now render, which depends on a sort and page only that client
+  client should now render, which depends on a sort and window only that client
   knows."
   [state]
   (into {} (map (fn [r] [r (digest/digest state nil r)])) (digest/regions)))

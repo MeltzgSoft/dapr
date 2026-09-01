@@ -1,6 +1,6 @@
 (ns dapr.ui.views
   "Pure hiccup view descriptions for the Dapr web UI. Every function takes the
-  application state map (plus, for the track table, the sort/page parameters the
+  application state map (plus, for the track table, its sort/window parameters the
   request carried) and returns hiccup data — no side effects, no I/O.
 
   The page is assembled from *regions*, each an element with a stable id:
@@ -10,7 +10,8 @@
   itself from `/fragments/<region>` on a timer, sending the digest it currently
   shows so an unchanged region costs an empty 204 (see dapr.ui.digest). Between
   the two, the browser holds no application state of its own: every control
-  carries what it needs in its URL, and a reload reproduces the page exactly."
+  carries what it needs in its URL. The virtual table's transient scroll position
+  is the deliberate exception and resets on reload."
   (:require [clojure.string :as str]
             [dapr.device.file.views]
             [dapr.device.format :as device-format]
@@ -18,25 +19,19 @@
             [dapr.device.smb.views]
             [dapr.device.views :as device-views]
             [dapr.domain.library :as lib]
+            [dapr.track-window.transforms :as track-window]
             [dapr.ui.digest :as digest]
             [dapr.ui.format :as fmt]
             [dapr.ui.html :as html]))
 
-(def page-size
-  "Rows of the track table drawn at once. JavaFX virtualized the table; a browser
-  will happily render ten thousand rows and then feel like it. Paging keeps every
-  swap small — which matters most for the checkbox, whose response re-renders the
-  page it is on so the capacity-driven disabling stays truthful."
-  200)
-
 (def ^:private default-view
   "Table view parameters a request that carries none is read as."
-  {:sort nil :dir :asc :page 0})
+  {:sort nil :dir :asc :start 0})
 
 (defn- view-params
   "The table's view as URL parameters, for a control that must preserve it."
-  [{:keys [sort dir page]}]
-  {:sort (some-> sort name) :dir (some-> dir name) :page page})
+  [{:keys [sort dir start]}]
+  {:sort (some-> sort name) :dir (some-> dir name) :start start})
 
 ;; --- track table -------------------------------------------------------------
 
@@ -76,15 +71,16 @@
 (defn- header-cell [view {:keys [field label num?]}]
   [:th {:class (when num? "num")}
    [:button {:hx-get    (html/url "/fragments/table"
-                                  {:sort (name field) :dir (name (next-dir view field)) :page 0})
+                                  {:sort (name field) :dir (name (next-dir view field)) :start 0})
              :hx-target "#track-table"
              :hx-swap   "outerHTML"
              :title     (str "Sort by " label)}
     label (sort-indicator view field)]])
 
-(defn- track-row [view row]
+(defn- track-row [view index row]
   (let [key-param (assoc (view-params view) :key (pr-str (:key row)))]
-    [:tr {:class (when-not (:in-source? row) "sink-only")}
+    [:tr {:class         (html/classes "track-row" (when-not (:in-source? row) "sink-only"))
+          :aria-rowindex (+ index 2)}
      [:td.tick
       [:input {:type      "checkbox"
                :checked   (boolean (:on? row))
@@ -95,67 +91,84 @@
                               "On the sink but not the source — kept by the current setting"))
                :hx-post   (html/url "/actions/toggle-track" key-param)
                :hx-target "#track-table"
-               :hx-swap   "outerHTML"}]]
+               :hx-swap   "outerMorph"}]]
      (for [{:keys [field num? render]} columns
            :let [v ((or render text-cell) (get row field))]]
        [:td {:class (when num? "num") :title v} v])]))
 
-(defn- pager
-  "Page controls. Shown only when there is more than one page — a table that fits
-  should not carry navigation for pages that don't exist."
-  [view pages page total]
-  (let [go (fn [label to enabled?]
-             [:button.btn {:hx-get    (html/url "/fragments/table"
-                                                (assoc (view-params view) :page to))
-                           :hx-target "#track-table"
-                           :hx-swap   "outerHTML"
-                           :disabled  (not enabled?)}
-              label])]
-    (when (> pages 1)
-      [:span.pager
-       (go "‹" (dec page) (pos? page))
-       [:span.muted (format "%d–%d of %d"
-                            (inc (* page page-size))
-                            (min total (* (inc page) page-size))
-                            total)]
-       (go "›" (inc page) (< page (dec pages)))])))
+(defn- spacer-row [class height]
+  (when (pos? height)
+    [:tr {:class (html/classes "virtual-spacer" class) :aria-hidden "true"}
+     [:td {:colspan (inc (count columns)) :style (str "height: " height "px")}]]))
+
+(defn- table-window
+  [state view]
+  (let [ordered (or (:ordered-keys view) (track-window/ordered-keys state view))
+        window  (track-window/window ordered (:start view))]
+    (assoc window :rows (fmt/track-rows-for-keys state (:keys window)))))
+
+(defn- track-table-body*
+  [state view {:keys [start end total rows top-height bottom-height]}]
+  [:tbody {:data-start  start
+           :data-end    end
+           :data-total  total
+           :data-sort   (some-> (:sort view) name)
+           :data-dir    (name (:dir view))
+           :data-digest (digest/digest state (assoc view :start start) :table)
+           :data-state-digest (digest/digest state (assoc view :start 0) :table)}
+   (spacer-row "top" top-height)
+   (if (seq rows)
+     (map-indexed (fn [offset row] (track-row (assoc view :start start) (+ start offset) row)) rows)
+     (when (zero? total)
+       [:tr [:td.empty {:colspan (inc (count columns))}
+             (if (:source-id state)
+               "No tracks match this filter."
+               "Pick a source library to see its tracks.")]]))
+   (spacer-row "bottom" bottom-height)])
+
+(defn track-table-body
+  "The bounded moving tbody fetched by the browser's scroll controller."
+  [state view]
+  (let [view   (merge default-view view)
+        window (table-window state view)]
+    (track-table-body* state view window)))
 
 (defn track-table
-  "The track picker: one row per track in the current filter, sorted and paged as
-  the request asked. The leading checkbox drives selection; a checkbox is disabled
-  when ticking it would overflow the sink (see fmt/track-rows), which is why
-  toggling re-renders the whole page of rows rather than just the one clicked."
+  "The virtualized track picker. Spacer rows represent the full filtered catalog,
+  while only one bounded window of real rows reaches the DOM."
   [state view]
-  (let [view  (merge default-view view)
-        rows  (fmt/sort-rows (fmt/track-rows state) (:sort view) (:dir view))
-        total (count rows)
-        pages (fmt/page-count total page-size)
-        page  (-> (:page view 0) (max 0) (min (dec pages)))
-        view  (assoc view :page page)
-        shown (fmt/page-rows rows page page-size)]
+  (let [view   (merge default-view view)
+        window (table-window state view)
+        start  (:start window)
+        total  (:total window)
+        view   (assoc view :start start)]
     [:section#track-table.card
-     (html/poll state :table (digest/digest state view :table) (view-params view))
+     (merge (html/poll state :table (digest/digest state view :table) (view-params view))
+            {:data-window-url (html/url "/fragments/table-body"
+                                        {:sort (some-> (:sort view) name)
+                                         :dir  (name (:dir view))})})
      [:header
       [:span.title (format "Tracks (%d)" total)]
       [:span.grow]
-      (pager view pages page total)]
-     ;; The table's own sort/page, for controls that live outside it (the column
+      (when (:sort view)
+        [:button.ghost {:hx-get    (html/url "/fragments/table" {:start 0})
+                        :hx-target "#track-table"
+                        :hx-swap   "outerHTML"
+                        :title     "Restore Artist, Album, Disc, Track order"}
+         "Reset sort"])
+      (when (> total track-window/window-size)
+        [:span.muted "Scroll to browse all tracks"])]
+     ;; The table's own sort/window, for controls that live outside it (the column
      ;; browser, the sink-only setting) and must not reset the user's view when
      ;; they re-render it.
      [:form#track-view {:hidden true}
       [:input {:type "hidden" :name "sort" :value (some-> (:sort view) name)}]
       [:input {:type "hidden" :name "dir" :value (name (:dir view))}]
-      [:input {:type "hidden" :name "page" :value page}]]
-     [:div.table-scroll
-      [:table.tracks
+      [:input {:type "hidden" :name "start" :value start}]]
+     [:div#track-scroll.table-scroll
+      [:table.tracks {:aria-rowcount (inc total)}
        [:thead [:tr [:th.tick.plain ""] (map (partial header-cell view) columns)]]
-       [:tbody
-        (if (seq shown)
-          (map (partial track-row view) shown)
-          [:tr [:td.empty {:colspan (inc (count columns))}
-                (if (:source-id state)
-                  "No tracks match this filter."
-                  "Pick a source library to see its tracks.")]])]]]]))
+       (track-table-body* state view window)]]]))
 
 ;; --- column browser ----------------------------------------------------------
 
@@ -176,7 +189,7 @@
                                                 {:col (name col) :value value})
                           :hx-include "#track-view"
                           :hx-target  "#track-table"
-                          :hx-swap    "outerHTML"
+                          :hx-swap    "outerMorph"
                           :title      "Check / uncheck all its tracks"}
       "✓"])])
 
@@ -606,7 +619,8 @@
     [:title "Dapr — music library sync"]
     [:link {:rel "stylesheet" :href "/dapr.css"}]
     [:script {:src htmx-src :defer true}]
-    [:script {:src htmx-sse-src :defer true}]]
+    [:script {:src htmx-sse-src :defer true}]
+    [:script {:src "/virtual-tracks.js" :defer true}]]
    ;; One event stream for the page. The server pushes "region X moved" and the
    ;; regions below re-fetch themselves; see dapr.web.events.
    ;; htmx 4's SSE extension dispatches the named server event on this body, and

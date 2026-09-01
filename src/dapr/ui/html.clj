@@ -3,9 +3,9 @@
   patterns the fragments are wired with.
 
   Everything a control needs to say is carried in its URL — the track key it
-  toggles, the table's sort and page, the digest a poll is checking against — so
-  no view state has to be kept in the browser and no request body has to be
-  hand-assembled in JavaScript. Pure string building; no side effects."
+  toggles, the table's sort/window, the digest a poll is checking against — so
+  no application state has to be kept in the browser. Pure string building; no
+  side effects."
   (:require [clojure.string :as str]
             [dapr.state :as state]
             [ring.util.codec :as codec]))

@@ -35,7 +35,8 @@
    ;; The selection is hashed rather than carried whole: it can hold a key per
    ;; track, and a persistent set caches its own hash.
    :table    (fn [s v] [(:catalog-version s) (hash (:selected s)) (:filter s) (:capacity s)
-                        (get-in s [:settings :sink-only-handling]) v])
+                        (get-in s [:settings :sink-only-handling])
+                        (select-keys v [:sort :dir :start])])
    :controls (fn [s _] [(:status s) (get-in s [:plan :summary])
                         (:source-id s) (:sink-id s) (:error s)])
    :browser  (fn [s _] (:browser s))})

@@ -17,6 +17,8 @@
   browsers pointed at Dapr see the same application, and a reload rebuilds the
   page exactly."
   (:require [clojure.edn :as edn]
+            [dapr.track-window.db :as track-index]
+            [dapr.track-window.transforms :as track-window]
             [dapr.ui.actions :as actions]
             [dapr.ui.views :as views]
             [dapr.web.assets :as assets]
@@ -54,19 +56,31 @@
       (into [tag (assoc attrs :hx-swap-oob "true")] content))))
 
 (defn- view-of
-  "The track table's sort/page from the request's parameters. An unrecognized sort
-  field is read as no sort, and a missing or unparseable page as the first."
-  [{:keys [sort dir page]}]
+  "The track table's sort/window from the request's parameters. An unrecognized
+  sort field is read as no sort, and a missing or unparseable start as zero."
+  [{:keys [sort dir start]}]
   (let [field (some-> (not-empty (str sort)) keyword)]
     {:sort (when (contains? views/sortable-fields field) field)
      :dir  (if (= "desc" dir) :desc :asc)
-     :page (or (some-> page str parse-long) 0)}))
+     :start (or (some-> start str parse-long) 0)}))
+
+(defn- indexed-view
+  "Attach the cached filtered/sorted key order used by a table renderer."
+  [index-cache state view]
+  (assoc view :ordered-keys
+         (track-index/lookup-or-build!
+          index-cache
+          (track-window/index-key state view)
+          #(track-window/ordered-keys state view))))
 
 (defn- render-regions
   "Response for `regions`: the first swapped into the target, the rest out of band."
-  [state view regions]
-  (html (cons (fragments/render state view (first regions))
-              (map (fn [r] (oob (fragments/render state view r))) (rest regions)))))
+  [index-cache state view regions]
+  (let [view (if (some #{:table :workspace} regions)
+               (indexed-view index-cache state view)
+               view)]
+    (html (cons (fragments/render state view (first regions))
+                (map (fn [r] (oob (fragments/render state view r))) (rest regions))))))
 
 ;; --- parameter coercion ------------------------------------------------------
 
@@ -287,49 +301,53 @@
        (on-quit)
        (html (views/stopped-page)))}))
 
-(def ^:private resets-page
-  "Actions after which the table must go back to its first page. They change which
-  rows exist at all, so the page number the control carried is about a list that
-  is gone — and landing on page 7 of a freshly narrowed table reads as an empty
-  one. The sort is kept: that is a preference, not a position."
-  #{"/actions/filter" "/actions/toggle-facet"})
+(def ^:private resets-window
+  "Actions after which the table must return to its beginning. They change which
+  rows exist at all, so the old scroll offset belongs to a list that is gone."
+  #{"/actions/filter"})
 
 (defn- action-handler
   "One Ring handler over every action route, dispatching on the request's path.
   Each action returns either regions to render or a response of its own."
-  [state-atom deps]
+  [state-atom index-cache deps]
   (let [table (handlers deps)]
     (fn [{:keys [uri params]}]
       (if-let [f (table uri)]
         (let [result (f state-atom params)
               view   (cond-> (view-of params)
-                       (resets-page uri) (assoc :page 0))]
+                       (resets-window uri) (assoc :start 0))]
           (if (vector? result)
-            (render-regions @state-atom view result)
+            (render-regions index-cache @state-atom view result)
             result))
         (resp/not-found "no such action")))))
 
 (defn- fragment-handler
   "GET /fragments/<region>: the region's markup, or 204 when the digest the client
   sent is still current."
-  [state-atom]
+  [state-atom index-cache]
   (fn [{:keys [params path-params]}]
     (if-let [region (fragments/region (:region path-params))]
       (let [state @state-atom
             view  (view-of params)]
         (if (fragments/unchanged? state view region (:d params))
           no-content
-          (html (fragments/render state view region))))
+          (html (fragments/render state
+                                  (if (contains? #{:table :table-body} region)
+                                    (indexed-view index-cache state view)
+                                    view)
+                                  region))))
       (resp/not-found "no such region"))))
 
-(defn- page-handler [state-atom]
+(defn- page-handler [state-atom index-cache]
   (fn [{:keys [params]}]
-    (-> (resp/response
-         (str "<!doctype html>"
-              (h/html (views/page @state-atom (view-of params)
-                                  {:htmx-src      (assets/htmx-src)
-                                   :htmx-sse-src  (assets/htmx-sse-src)}))))
-        (resp/content-type "text/html; charset=utf-8"))))
+    (let [state @state-atom
+          view  (indexed-view index-cache state (view-of params))]
+      (-> (resp/response
+           (str "<!doctype html>"
+                (h/html (views/page state view
+                                    {:htmx-src      (assets/htmx-src)
+                                     :htmx-sse-src  (assets/htmx-sse-src)}))))
+          (resp/content-type "text/html; charset=utf-8")))))
 
 ;; --- router ------------------------------------------------------------------
 
@@ -338,11 +356,12 @@
   background refresher, the event hub the page subscribes to, and `:on-quit`,
   called when the user quits."
   [state-atom {:keys [hub] :as deps}]
-  (let [actions (action-handler state-atom deps)]
+  (let [index-cache (or (:track-index deps) (track-index/create! nil))
+        actions     (action-handler state-atom index-cache deps)]
     (ring/ring-handler
      (ring/router
-      [["/" {:get (page-handler state-atom)}]
-       ["/fragments/:region" {:get (fragment-handler state-atom)}]
+      [["/" {:get (page-handler state-atom index-cache)}]
+       ["/fragments/:region" {:get (fragment-handler state-atom index-cache)}]
        ["/actions/*path" {:post actions}]
        ["/assets/:name" {:get assets/handler}]
        ;; Long-lived: one open stream per page (see dapr.web.events).

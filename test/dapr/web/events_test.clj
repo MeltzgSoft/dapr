@@ -63,7 +63,7 @@
   (testing "covers every pollable region, so none can be silently unwatched"
     (is (= (digest/regions) (set (keys (events/region-digests state/initial-state))))))
   (testing "taken without view parameters: what moved is the data, not one
-            client's sort and page"
+            client's sort and visible window"
     (is (= (events/region-digests state/initial-state)
            (events/region-digests state/initial-state)))))
 

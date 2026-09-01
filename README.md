@@ -31,8 +31,8 @@ a live device.
    storage). Libraries persist across sessions as EDN; unavailable libraries
    (device unplugged, share unreachable) are greyed out.
 2. **Pick a source and a sink** library.
-3. **Choose tracks** — the source's tracks are listed in a table you can sort by
-   any column and page through, beside an iTunes-style artist/album column
+3. **Choose tracks** — the source's tracks are listed in a virtualized table you
+   can sort by any column and scroll continuously, beside an iTunes-style artist/album column
    browser: clicking a facet filters the table, and the ✓ beside it checks or
    unchecks every track under it without narrowing the view. Tracks already on
    the sink are pre-selected. A **capacity meter** (free space across the sink's
@@ -145,7 +145,7 @@ reader (e.g. `smb://`) falls back to the path-derived default.
 
 ### The web UI
 
-The server renders HTML; the browser stores nothing. Every part of the page is a
+The server renders HTML; the browser stores no application data. Every part of the page is a
 **region** with a stable id (`#workspace`, `#track-table`, `#status-bar`, …),
 rendered by a pure function of the application state:
 
@@ -160,7 +160,7 @@ rendered by a pure function of the application state:
   Content` and htmx leaves the DOM alone (`dapr.ui.digest`).
 
 What is pushed is a **hint, never markup** (`dapr.web.events`). The table's HTML
-depends on a sort and a page only the client knows, so pushing HTML would force
+depends on a sort and a visible window only the client knows, so pushing HTML would force
 the server to track what every client is showing — exactly the per-client state
 this design avoids. Pushing a hint keeps `/fragments/*` the single rendering
 path, so what a browser gets is what the route tests exercise. Regions also keep
@@ -173,9 +173,10 @@ written very often during a scan, so notifications are coalesced — one per
 region that actually changed over a ~100 ms window.
 
 Everything a control needs travels in its URL — the track key a checkbox
-toggles, the table's sort and page, the digest a poll is checking — so there is
-no session, no client-side model, and a reload reproduces the page exactly,
-open settings panel and all. The theme is the one thing a swap cannot reach
+toggles, the table's sort/window, the digest a poll is checking — so there is
+no session or client-side domain model. The virtual table keeps only transient
+scroll position in the browser; a reload returns it to the beginning. The open
+settings panel and other application state still survive reloads. The theme is the one thing a swap cannot reach
 (it hangs off `<html data-theme>`), so changing it answers `HX-Refresh` and the
 page comes back the same.
 

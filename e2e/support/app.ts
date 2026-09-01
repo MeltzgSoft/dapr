@@ -106,10 +106,10 @@ export async function choose(page: Page, role: 'source' | 'sink', name: string):
 }
 
 export function trackRows(page: Page): Locator {
-  return page.locator('#track-table tbody tr');
+  return page.locator('#track-table tbody tr.track-row');
 }
 
-/** Tick every row on the current page, one at a time — each re-renders the table. */
+/** Tick every currently materialized row, one at a time. */
 export async function checkAllRows(page: Page): Promise<void> {
   const count = await trackRows(page).count();
   for (let i = 0; i < count; i++) {

@@ -14,8 +14,9 @@
   "region -> (fn [state view]) returning that region's hiccup. Regions with a
   digest (dapr.ui.digest) can also be polled; the rest are only ever pushed back
   as the result of an action."
-  {:workspace (fn [s v] (views/workspace s v))
-   :table     (fn [s v] (views/track-table s v))
+  {:workspace  (fn [s v] (views/workspace s v))
+   :table      (fn [s v] (views/track-table s v))
+   :table-body (fn [s v] (views/track-table-body s v))
    :sync-bar  (fn [s _] (views/sync-bar s))
    :capacity  (fn [s _] (views/capacity-bar s))
    :controls  (fn [s _] (views/controls s))

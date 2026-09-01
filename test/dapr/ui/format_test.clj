@@ -69,13 +69,24 @@
   (let [cat {["a" 1] {:key ["a" 1] :artist "Alice" :album "One"   :title "x"}
              ["b" 2] {:key ["b" 2] :artist "Alice" :album "Two"   :title "y"}
              ["c" 3] {:key ["c" 3] :artist "Bob"   :album "Three" :title "z"}
-             ["d" 4] {:key ["d" 4] :artist nil     :album nil     :title "n"}}]
+             ["d" 4] {:key ["d" 4] :artist nil     :album nil     :title "n"}}
+        mixed-cat {["e" 5] {:key ["e" 5] :artist "charlie" :album "Zebra"}
+                   ["f" 6] {:key ["f" 6] :artist "Beta"    :album "middle"}
+                   ["g" 7] {:key ["g" 7] :artist "alpha"   :album "apple"}}]
     (testing "artists are distinct and sorted, with nil omitted"
       (is (= ["Alice" "Bob"] (fmt/artists cat))))
     (testing "albums span the catalog when artist is nil, else scope to the artist"
       (is (= ["One" "Three" "Two"] (fmt/albums cat nil)))
       (is (= ["One" "Two"] (fmt/albums cat "Alice")))
       (is (= ["Three"] (fmt/albums cat "Bob"))))
+    (testing "artist and album facets use the table columns' case-insensitive order"
+      (let [rows          (vec (vals mixed-cat))
+            table-artists (->> (fmt/sort-rows rows :artist :asc) (map :artist) distinct vec)
+            table-albums  (->> (fmt/sort-rows rows :album :asc) (map :album) distinct vec)]
+        (is (= ["alpha" "Beta" "charlie"] (fmt/artists mixed-cat)))
+        (is (= ["apple" "middle" "Zebra"] (fmt/albums mixed-cat nil)))
+        (is (= table-artists (fmt/artists mixed-cat)))
+        (is (= table-albums (fmt/albums mixed-cat nil)))))
     (testing "search-filter narrows facet values case-insensitively; blank keeps all"
       (is (= ["Alice" "Bob"] (fmt/search-filter (fmt/artists cat) "")))
       (is (= ["Alice" "Bob"] (fmt/search-filter (fmt/artists cat) "   ")))
@@ -311,24 +322,30 @@
                                 :selected       #{}
                                 :filter         {:artist "B"}}))))))
 
-(deftest sort-rows-test
-  (let [rows [{:key ["" "" "" 0 "c"] :title "b" :disc-number 1 :track-number 2 :album "z" :artist "z"}
-              {:key ["" "" "" 0 "a"] :title "C" :disc-number 1 :track-number 1 :album "z" :artist "z"}
-              {:key ["" "" "" 0 "b"] :title "a" :disc-number 2 :track-number 1 :album "z" :artist "z"}]]
-    (testing "with no column, disc then track order"
-      (is (= ["C" "b" "a"] (mapv :title (fmt/sort-rows rows nil :asc)))))
-    (testing "a column sorts case-insensitively by that field alone"
-      (is (= ["a" "b" "C"] (mapv :title (fmt/sort-rows rows :title :asc))))
-      (is (= ["C" "b" "a"] (mapv :title (fmt/sort-rows rows :title :desc)))))))
+(deftest track-rows-for-keys-test
+  (let [state {:source-catalog (catalog a1 b1)
+               :sink-catalog   {}
+               :selected       #{}
+               :capacity       {:free 1000}
+               :settings       {}}]
+    (testing "projects only requested keys and preserves their order"
+      (is (= [(:key b1) (:key a1)]
+             (mapv :key (fmt/track-rows-for-keys state [(:key b1) (:key a1)])))))
+    (testing "omits a key removed by a concurrent catalog refresh"
+      (is (= [(:key a1)]
+             (mapv :key (fmt/track-rows-for-keys state [[:gone] (:key a1)])))))))
 
-(deftest paging-test
-  (testing "an empty table still has one page"
-    (is (= 1 (fmt/page-count 0 10))))
-  (testing "a partial last page counts"
-    (is (= 3 (fmt/page-count 21 10))))
-  (testing "pages slice in order"
-    (is (= [0 1 2] (fmt/page-rows (vec (range 10)) 0 3)))
-    (is (= [9] (fmt/page-rows (vec (range 10)) 3 3))))
-  (testing "a page past the end clamps to the last one, rather than showing nothing"
-    (is (= [9] (fmt/page-rows (vec (range 10)) 99 3)))
-    (is (= [0 1 2] (fmt/page-rows (vec (range 10)) -1 3)))))
+(deftest sort-rows-test
+  (let [rows [{:key ["" "" "" 0 "b"] :title "b" :disc-number 1 :track-number 2
+               :album "Zebra" :artist "Beta"}
+              {:key ["" "" "" 0 "c"] :title "C" :disc-number 2 :track-number 1
+               :album "middle" :artist "alpha"}
+              {:key ["" "" "" 0 "a"] :title "a" :disc-number 2 :track-number 2
+               :album "Apple" :artist "alpha"}
+              {:key ["" "" "" 0 "d"] :title "d" :disc-number 1 :track-number 3
+               :album "Apple" :artist "alpha"}]]
+    (testing "with no column, artist then album then disc then track order"
+      (is (= ["d" "a" "C" "b"] (mapv :title (fmt/sort-rows rows nil :asc)))))
+    (testing "a column sorts case-insensitively by that field alone"
+      (is (= ["a" "b" "C" "d"] (mapv :title (fmt/sort-rows rows :title :asc))))
+      (is (= ["d" "C" "b" "a"] (mapv :title (fmt/sort-rows rows :title :desc)))))))

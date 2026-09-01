@@ -12,6 +12,7 @@
             [dapr.log :as log]
             [dapr.refresh :as refresh]
             [dapr.state :as state]
+            [dapr.track-window.db :as track-index]
             [dapr.ui.actions :as actions]
             [dapr.web.server :as server]
             [datascript.core :as d]
@@ -56,6 +57,12 @@
 
 (defmethod ig/halt-key! :dapr/state [_ state-atom]
   (reset! state-atom state/initial-state))
+
+(defmethod ig/init-key :dapr/track-index [_ opts]
+  (track-index/create! opts))
+
+(defmethod ig/halt-key! :dapr/track-index [_ index-cache]
+  (track-index/clear! index-cache))
 
 (defmethod ig/init-key :dapr/log [_ {:keys [cache state-atom]}]
   (let [settings (cache/app-settings (d/db (:conn cache)))
