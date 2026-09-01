@@ -29,7 +29,10 @@ a live device.
 1. **Manage libraries** — create named libraries, each a set of
    `file://`/`smb://`/`mtp://` root directories (e.g. a phone's internal + SD
    storage). Libraries persist across sessions as EDN; unavailable libraries
-   (device unplugged, share unreachable) are greyed out.
+   (device unplugged, share unreachable) are greyed out. MTP devices are
+   re-probed in the background, so reconnecting one enables its library again
+   without restarting Dapr; native MTP sessions stay open only while Dapr is
+   scanning, syncing, browsing, or performing one of those short probes.
 2. **Pick a source and a sink** library.
 3. **Choose tracks** — the source's tracks are listed in a virtualized table you
    can sort by any column and scroll continuously, beside an iTunes-style artist/album column

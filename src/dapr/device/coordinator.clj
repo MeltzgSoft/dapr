@@ -95,10 +95,11 @@
 (defn- with-lock!
   "Run `f` holding `device`'s lock, blocking until it is free. `foreground?` says
   whether the wait should be visible to `queued?` — i.e. whether a background
-  holder should give the device up for it."
+  holder should give the device up for it. Once acquired, the device-specific
+  access wrapper owns any connection/session for exactly the duration of `f`."
   [device foreground? f]
   (if-not (coordinated? device)
-    (f)
+    (device-format/with-access! device f)
     (let [k                (:key device)
           ^ReentrantLock l (lock-for k)]
       (if-not foreground?
@@ -110,7 +111,8 @@
         (do (swap! foreground-waiters* update k (fnil inc 0))
             (try (.lock l)
                  (finally (swap! foreground-waiters* update k dec)))))
-      (try (f) (finally (.unlock l))))))
+      (try (device-format/with-access! device f)
+           (finally (.unlock l))))))
 
 (defn with-device!
   "Run `f` holding `device`'s lock as a **foreground** operation: a background walk

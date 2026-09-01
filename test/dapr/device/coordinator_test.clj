@@ -3,10 +3,18 @@
   cross-thread hand-off), but every wait is bounded by a deadline so a regression
   fails the test rather than hanging the suite."
   (:require [clojure.test :refer [deftest is testing use-fixtures]]
-            [dapr.device.coordinator :as coord])
+            [dapr.device.coordinator :as coord]
+            [dapr.device.mtp.fs :as mtp-fs])
   (:import (java.lang Thread$State)))
 
-(use-fixtures :each (fn [f] (coord/reset-locks!) (f) (coord/reset-locks!)))
+(use-fixtures :each
+  (fn [f]
+    (coord/reset-locks!)
+    ;; These are arbitration tests with synthetic MTP descriptors; native bridge
+    ;; lifecycle has its own unit coverage in dapr.device.mtp.fs-test.
+    (with-redefs [mtp-fs/with-session! (fn [work] (work))]
+      (f))
+    (coord/reset-locks!)))
 
 (def ^:private timeout-ms
   "Upper bound on any hand-off in these tests; generous enough for a loaded CI box,
@@ -72,6 +80,17 @@
     (is (false? (coord/coordinated? nil)))
     (is (false? (coord/coordinated? {:key nil :type :mtp})))
     (is (= :ran (coord/with-device! nil (fn [] :ran))))))
+
+(deftest device-access-lifecycle-test
+  (testing "a coordinated operation enters its backend lifecycle inside the lock"
+    (let [events (atom [])
+          dev    (mtp-device "1:2:a")]
+      (with-redefs [mtp-fs/with-session!
+                    (fn [work]
+                      (swap! events conj :open)
+                      (try (work) (finally (swap! events conj :close))))]
+        (is (= :ran (coord/with-device! dev #(do (swap! events conj :work) :ran))))
+        (is (= [:open :work :close] @events))))))
 
 (deftest foreground-preempts-background-test
   (testing "a background holder sees queued? and yields the device to a waiter"

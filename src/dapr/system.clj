@@ -5,6 +5,7 @@
   (:require [clojure.java.io :as io]
             [dapr.db.cache :as cache]
             [dapr.db.migrations :as migrations]
+            [dapr.device.availability :as availability]
             [dapr.device.coordinator :as coord]
             [dapr.device.mtp.fs :as mtp-fs]
             [dapr.device.smb.fs :as smb-fs]
@@ -95,6 +96,12 @@
 
 (defmethod ig/halt-key! :dapr/coordinator [_ _]
   (coord/reset-locks!))
+
+(defmethod ig/init-key :dapr/availability [_ {:keys [state-atom interval-millis]}]
+  (availability/start! {:state-atom state-atom :interval-millis interval-millis}))
+
+(defmethod ig/halt-key! :dapr/availability [_ monitor]
+  (availability/stop! monitor))
 
 (defmethod ig/init-key :dapr/refresher [_ {:keys [state-atom cache workers]}]
   (refresh/start! {:state-atom state-atom :cache cache :workers workers}))

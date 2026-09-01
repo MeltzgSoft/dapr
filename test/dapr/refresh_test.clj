@@ -4,8 +4,10 @@
   how it projects itself into the app state. nio/scan-roots! is stubbed, so no
   filesystem is touched — the real walk (including pause/resume) is covered by
   dapr.fs.nio-test."
-  (:require [clojure.test :refer [deftest is testing]]
+  (:require [clojure.test :refer [deftest is testing use-fixtures]]
             [dapr.db.cache :as cache]
+            [dapr.device.availability :as availability]
+            [dapr.device.mtp.fs :as mtp-fs]
             [dapr.fs.nio :as nio]
             [dapr.refresh :as refresh]
             [dapr.state :as state]
@@ -13,6 +15,13 @@
   (:import (java.nio.file Files)
            (java.nio.file.attribute FileAttribute)
            (java.util.concurrent LinkedBlockingDeque)))
+
+(use-fixtures :each
+  (fn [f]
+    ;; MTP roots in the concurrency tests are descriptors only; scan-roots! is
+    ;; stubbed and native bridge lifecycle is covered in mtp.fs-test.
+    (with-redefs [mtp-fs/with-session! (fn [work] (work))]
+      (f))))
 
 (def ^:private refresh-library! #'refresh/refresh-library!)
 (def ^:private claim! #'refresh/claim!)
@@ -126,6 +135,21 @@
                 foreground one"
         (is (= :idle (:status @state-atom)))
         (is (nil? (:error @state-atom))))
+      (finally
+        (.delete path)))))
+
+(deftest failed-mtp-walk-reprobes-availability-test
+  (let [{:keys [refresher lib-id state-atom path]} (fixture!)
+        library {:id lib-id :name "Player" :roots ["mtp://1:2:a/SD/Music/"]}
+        probed  (atom nil)]
+    (try
+      (swap! state-atom state/set-libraries [library])
+      (with-redefs [nio/scan-roots! (fn [_roots _opts] (throw (ex-info "unplugged" {})))
+                    availability/probe-mtp-library!
+                    (fn [_state-atom seen-library] (reset! probed seen-library) false)]
+        (refresh-library! refresher lib-id))
+      (is (= library @probed)
+          "a failed MTP operation checks whether the player disappeared")
       (finally
         (.delete path)))))
 

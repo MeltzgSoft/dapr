@@ -80,9 +80,14 @@
 
 (defn set-library-availability
   "Record the probed reachability of libraries as an id->bool map (see
-  dapr.ui.actions/probe-availability!)."
+  dapr.device.availability/probe!)."
   [state availability]
   (assoc state :library-availability (or availability {})))
+
+(defn set-library-available
+  "Record one library's latest reachability without disturbing other probes."
+  [state lib-id available?]
+  (assoc-in state [:library-availability lib-id] (boolean available?)))
 
 (defn library-unreachable?
   "True when library `lib-id`'s device has been probed and came back unavailable,
@@ -97,7 +102,8 @@
   "Drop the source and/or sink selection when its library has been probed
   unavailable (explicitly false in `availability`), invalidating any plan. Unprobed
   libraries (absent from the map) are left selected. Used at launch so a persisted
-  default on an unreachable device isn't pre-selected, and on a manual refresh."
+  default on an unreachable device isn't pre-selected, on a manual refresh, and
+  when the MTP hot-plug monitor sees a player disconnect."
   [state availability]
   (let [src-bad? (and (:source-id state) (false? (get availability (:source-id state))))
         snk-bad? (and (:sink-id state) (false? (get availability (:sink-id state))))]

@@ -39,6 +39,7 @@
     browse, and the reason a sync against a library that has not completed its
     refresh asks the user to confirm (see dapr.ui.actions)."
   (:require [dapr.db.cache :as cache]
+            [dapr.device.availability :as availability]
             [dapr.device.coordinator :as coord]
             [dapr.fs.nio :as nio]
             [dapr.library.catalogs :as catalogs]
@@ -283,7 +284,13 @@
             (let [summary (log/error-summary t)]
               (swap! state-atom state/set-refresh-error lib-id summary)
               (t/log! {:level :error :error t
-                       :msg   (format "Refresh of '%s' failed: %s" (:name library) summary)}))))
+                       :msg   (format "Refresh of '%s' failed: %s" (:name library) summary)}))
+            ;; A failed MTP call commonly means hot-unplug. Re-probe only this
+            ;; backend: ordinary scan errors must not grey a reachable local/SMB
+            ;; library, while a disconnected player should become unselectable
+            ;; immediately and be picked up by the reconnect monitor later.
+            (when (= :mtp (:type (coord/library-device library)))
+              (availability/probe-mtp-library! state-atom library))))
         (repaint! refresher lib-id)))))
 
 (defn- run-loop!

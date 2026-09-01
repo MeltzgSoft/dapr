@@ -16,6 +16,12 @@
  :dapr/devices  {}
  ;; Per-device locks arbitrating the background refresh against foreground user ops.
  :dapr/coordinator {}
+ ;; Hot-plug monitor. Each MTP probe acquires and releases a short bridge session;
+ ;; no device connection is retained between turns. It waits behind active work.
+ :dapr/availability {:state-atom      #ig/ref :dapr/state
+                     :coordinator     #ig/ref :dapr/coordinator
+                     :devices         #ig/ref :dapr/devices
+                     :interval-millis 5000}
  ;; The background library refresher. Refs :dapr/devices so it halts *before* the
  ;; device sessions it scans through are closed, and :dapr/coordinator so the locks
  ;; it takes outlive it. :workers sizes the pool: libraries on *different* devices
@@ -34,6 +40,7 @@
                :track-index    #ig/ref :dapr/track-index
                :log            #ig/ref :dapr/log
                :refresher      #ig/ref :dapr/refresher
+               :availability   #ig/ref :dapr/availability
                :devices        #ig/ref :dapr/devices
                :host           "127.0.0.1"
                :port           7373

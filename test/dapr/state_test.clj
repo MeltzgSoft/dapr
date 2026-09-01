@@ -71,6 +71,12 @@
     (is (= {1 true 2 false}
            (:library-availability (state/set-library-availability state/initial-state {1 true 2 false}))))
     (is (= {} (:library-availability (state/set-library-availability state/initial-state nil)))))
+  (testing "set-library-available updates one probe without replacing the others"
+    (is (= {1 true 2 true}
+           (:library-availability
+            (state/set-library-available
+             (state/set-library-availability state/initial-state {1 true 2 false})
+             2 true)))))
   (testing "clear-unavailable-selection drops only explicitly-unavailable selections"
     (let [s (assoc state/initial-state
                    :source-id 1 :sink-id 2

@@ -42,6 +42,16 @@
   under-arbitrating one lets a background scan starve a user's sync."
   identity)
 
+(defmulti with-access!
+  "Run `f` inside any connection/session lifecycle required by `device`.
+
+  Device locking and connection lifetime are separate concerns: the coordinator
+  decides *who* may use a device, then calls this hook so a backend can acquire
+  its native resources only for the duration of that use. Most filesystems need
+  no wrapper; MTP uses it to open the singleton bridge on the first active
+  operation and close it after the last one."
+  (fn [device _f] (:type device)))
+
 (defmulti selectable-root?
   "True when `uri-str` points at a folder that can be saved as a library root."
   (fn [uri-str] (device-type uri-str)))
@@ -61,6 +71,7 @@
 (defmethod supported? :default [_] false)
 (defmethod root-device-key :default [_] nil)
 (defmethod arbitrate-access? :default [_] true)
+(defmethod with-access! :default [_ f] (f))
 (defmethod selectable-root? :default [_] false)
 (defmethod library-menu-label :default [device-type] (name device-type))
 (defmethod browser-root-label :default [_] "Places")

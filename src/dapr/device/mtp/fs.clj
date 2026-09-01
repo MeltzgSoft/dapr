@@ -23,6 +23,16 @@
   ;; namespace reload can't forget a session this process still holds.
   (atom false))
 
+(defonce ^:private session-users
+  ;; Number of active high-level MTP operations. melt-jfs has one bridge for the
+  ;; process and opening it opens every attached device, so a per-device close is
+  ;; neither available nor safe: one completed scan could tear the bridge out
+  ;; from under a concurrent sync to another device. The count keeps the bridge
+  ;; live until the last overlapping operation leaves.
+  (atom 0))
+
+(defonce ^:private session-monitor (Object.))
+
 (defn- mark-touched!
   "Record that we are about to reach for the bridge, so halt knows there is
   something to release. Called *before* the reach: a detection that opened sessions
@@ -30,13 +40,20 @@
   []
   (reset! bridge-touched? true))
 
+(defn- open-bridge!
+  "Detect devices and open the process-wide native bridge."
+  []
+  (mark-touched!)
+  (MTPDeviceBridge/getInstance))
+
+(declare with-session!)
+
 (defn- ensure-filesystem!
   "Ensure the MTP filesystem addressed by `uri` is open."
   [^URI uri]
   (try
     (FileSystems/getFileSystem uri)
     (catch FileSystemNotFoundException _
-      (mark-touched!)
       (FileSystems/newFileSystem uri {}))))
 
 (defmethod dfs/root-path! :mtp [uri-str]
@@ -45,14 +62,16 @@
     (Paths/get uri)))
 
 (defmethod dfs/dir-children! :mtp [uri]
-  (dfs/directory-children! (dfs/root-path! uri) dfs/directory?))
+  (with-session!
+    #(dfs/directory-children! (dfs/root-path! uri) dfs/directory?)))
 
 (defmethod dfs/available? :mtp [uri-str]
   ;; Opening the MTP filesystem for a disconnected device (or with no native MTP
   ;; access) throws; catch Throwable so a native/linkage failure degrades to
   ;; unavailable rather than crashing the probe.
   (try
-    (Files/isDirectory (dfs/root-path! uri-str) (make-array LinkOption 0))
+    (with-session!
+      #(Files/isDirectory (dfs/root-path! uri-str) (make-array LinkOption 0)))
     (catch Throwable _ false)))
 
 (defn- device-label
@@ -75,9 +94,62 @@
 
 (defn- close-bridge!
   "Close the native bridge. Split out from close! so the decision to call it at all
-  is testable without native access."
+  is testable without native access. Uses the enum singleton directly: calling
+  getInstance here would run hot-plug detection (and potentially open a newly
+  attached device) immediately before closing it."
   []
-  (.close (MTPDeviceBridge/getInstance)))
+  (.close MTPDeviceBridge/INSTANCE))
+
+(defn- close-after-use!
+  "Synchronously close a bridge opened by an active operation. Called while
+  session-monitor is held, so a new first user cannot race the close. A failure
+  is logged and leaves bridge-touched? set: system halt then gets another bounded
+  chance to release it."
+  []
+  (when @bridge-touched?
+    (try
+      (close-bridge!)
+      (reset! bridge-touched? false)
+      (catch Throwable t
+        (t/log! {:level :warn :error t
+                 :msg   "Could not release the MTP device session: "})))))
+
+(defn- acquire-session!
+  []
+  (locking session-monitor
+    (when (zero? @session-users)
+      (try
+        (open-bridge!)
+        (catch Throwable t
+          ;; Detection can open some devices before another one fails. Best
+          ;; effort cleanup keeps that partial attempt from poisoning reconnect.
+          (close-after-use!)
+          (throw t))))
+    (swap! session-users inc)))
+
+(defn- release-session!
+  []
+  (locking session-monitor
+    (let [remaining (swap! session-users dec)]
+      (when (neg? remaining)
+        (reset! session-users 0)
+        (throw (IllegalStateException. "MTP session released without an active user")))
+      (when (zero? remaining)
+        (close-after-use!)))))
+
+(defn with-session!
+  "Run `f` while the native MTP bridge is available, releasing it afterwards.
+
+  Nested and concurrent callers share one bridge lease. The first caller opens
+  melt-jfs (which currently opens sessions to all attached devices); the last
+  caller closes it. This is the lifecycle used by scans, syncs, availability
+  probes and folder-browser listings, so none leaves a device connected while
+  idle. Returns f's value and releases even when f throws."
+  [f]
+  (acquire-session!)
+  (try
+    (f)
+    (finally (release-session!))))
 
 (defn close!
   "Release every open native MTP device session so the device isn't left locked for
@@ -96,22 +168,24 @@
   libmtp means nothing to close. The bridge re-detects on the next getInstance, so
   this is safe across a REPL reset."
   []
-  (when (compare-and-set! bridge-touched? true false)
-    (let [done (future (try (close-bridge!) (catch Throwable _ nil)))]
-      (when (= ::timeout (deref done close-timeout-millis ::timeout))
-        (t/log! {:level :warn
-                 :msg   "MTP device did not release in time; leaving it to the JVM exit."})))))
+  (locking session-monitor
+    (when (and (zero? @session-users)
+               (compare-and-set! bridge-touched? true false))
+      (let [done (future (try (close-bridge!) (catch Throwable _ nil)))]
+        (when (= ::timeout (deref done close-timeout-millis ::timeout))
+          (t/log! {:level :warn
+                   :msg   "MTP device did not release in time; leaving it to the JVM exit."}))))))
 
 (defn devices!
   "Detect connected MTP devices and return a vector of endpoints
   {:id <vendor:product:serial> :name <display-name> :uri \"mtp://<id>/\"}."
   []
-  (mark-touched!)
-  (let [bridge (MTPDeviceBridge/getInstance)]
-    (->> (.getDeviceInfo bridge)
-         (mapv (fn [entry]
-                 (let [id-str (.toString ^Object (key entry))
-                       info   (val entry)]
-                   {:id   id-str
-                    :name (device-label info id-str)
-                    :uri  (str "mtp://" id-str "/")}))))))
+  (with-session!
+    #(let [bridge (MTPDeviceBridge/getInstance)]
+       (->> (.getDeviceInfo bridge)
+            (mapv (fn [entry]
+                    (let [id-str (.toString ^Object (key entry))
+                          info   (val entry)]
+                      {:id   id-str
+                       :name (device-label info id-str)
+                       :uri  (str "mtp://" id-str "/")})))))))

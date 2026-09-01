@@ -14,11 +14,11 @@
   they preempt an in-flight refresh."
   (:require [clojure.java.io :as io]
             [dapr.db.cache :as cache]
+            [dapr.device.availability :as availability]
             [dapr.device.coordinator :as coord]
             [dapr.device.events :as device-events]
             [dapr.device.file.events]
             [dapr.device.format :as device]
-            [dapr.device.fs :as dfs]
             [dapr.device.mtp.events]
             [dapr.device.smb.events]
             [dapr.domain.library :as lib]
@@ -160,31 +160,20 @@
            :message (format "Still refreshing %s, so the track list may not match what is on the device. Sync anyway?"
                             (fmt/name-list (map :name libs))))))
 
-(defn- probe-availability!
-  "Probe each library's device reachability and record an id->bool map in state
-  (dfs/available? per root; a library is available when all its roots resolve to an
-  existing directory). SMB/MTP probes may block, hence the background thread at the
-  call sites."
-  [state-atom]
-  (let [libs  (:libraries @state-atom)
-        avail (into {} (map (fn [l] [(:id l) (boolean (and (seq (:roots l))
-                                                           (every? dfs/available? (:roots l))))]))
-                    libs)]
-    (swap! state-atom state/set-library-availability avail)))
-
 (defn- refresh-selection!
   "Probe availability, drop any source/sink selection that has become unavailable,
   repaint the remaining catalogs from the cache, and re-queue a background refresh
   of the chosen source and sink. Used at launch and by the ↻ Refresh button — which
-  is therefore how a user forces an already-completed library to be re-walked after
-  plugging a device in or changing it on the device side.
+  is how a user forces an already-completed library to be re-walked after changing
+  it on the device side. MTP hot-plug availability itself is also kept current by
+  dapr.device.availability's monitor.
 
   Only the *chosen* libraries are walked, here as everywhere: the others have no
   reader waiting on their catalogs, and reaching for a device that isn't attached
   costs a blocking probe per root and reports a failure the user can do nothing
   about."
   [state-atom cache refresher preselect?]
-  (probe-availability! state-atom)
+  (availability/probe! state-atom)
   (swap! state-atom (fn [s] (state/clear-unavailable-selection s (:library-availability s))))
   (when (:source-id @state-atom)
     (paint-catalogs! state-atom cache preselect?))
@@ -297,7 +286,7 @@
                                 (state/delete-library id)
                                 (state/forget-refresh id))))
   (refresh-libraries! state-atom conn)
-  (future (probe-availability! state-atom)))
+  (future (availability/probe! state-atom)))
 
 (defn library-default!
   "Mark or clear a library as the default source or sink (applied at next launch,
@@ -326,7 +315,7 @@
         (swap! state-atom state/cancel-editor)
         ;; Probe *first*: refresh! skips a library the last probe called
         ;; unreachable, and this edit may be the one that fixed its roots.
-        (future (probe-availability! state-atom)
+        (future (availability/probe! state-atom)
                 (refresh/refresh! refresher [lib-id]))
         true)
       (do (t/log! "Library needs a name and at least one file://, mtp:// or smb:// root.")
