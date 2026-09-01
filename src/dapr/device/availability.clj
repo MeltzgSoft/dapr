@@ -1,11 +1,10 @@
 (ns dapr.device.availability
-  "Reachability probes and MTP hot-plug monitoring.
+  "Device-generic reachability probes and reconnect monitoring.
 
   A probe is real device I/O, so it is always coordinated and always runs off
-  request threads. MTP's access wrapper gives each probe a short-lived bridge
-  session; no native connection remains open between monitor turns."
+  request threads. Each filesystem backend's access multimethod supplies any
+  short-lived connection/session; none remains open between monitor turns."
   (:require [dapr.device.coordinator :as coord]
-            [dapr.device.format :as device]
             [dapr.device.fs :as dfs]
             [dapr.state :as state]
             [taoensso.telemere :as t]))
@@ -54,17 +53,13 @@
                  (state/clear-unavailable-selection s' (:library-availability s'))))
              s))))
 
-(defn probe-mtp-library!
-  "Re-probe one MTP library after an operation failed. Returns its reachability
-  and immediately projects an unplug into the source/sink pickers."
+(defn probe-library!
+  "Re-probe one library after an operation failed. Returns its reachability and
+  immediately projects a disconnect into the source/sink pickers."
   [state-atom library]
   (let [available? (library-available? library)]
     (record-result! state-atom (:id library) available?)
     available?))
-
-(defn- mtp-libraries
-  [state]
-  (filter #(= :mtp (device/device-type (first (:roots %)))) (:libraries state)))
 
 (defn- wait-turn!
   [{:keys [running? signal interval-millis]}]
@@ -77,7 +72,7 @@
   (while @running?
     (wait-turn! monitor)
     (when @running?
-      (doseq [library (mtp-libraries @state-atom)
+      (doseq [library (:libraries @state-atom)
               :while @running?]
         (try
           (record-result! state-atom (:id library)
@@ -87,19 +82,19 @@
             ;; but stays a warning: active scans/syncs report their own errors.
             (record-result! state-atom (:id library) false)
             (t/log! {:level :warn :error error
-                     :msg   (format "MTP availability probe for '%s' failed: "
+                     :msg   (format "Availability probe for '%s' failed: "
                                     (:name library))})))))))
 
 (defn start!
-  "Start a daemon that re-probes configured MTP libraries. The initial all-device
+  "Start a daemon that re-probes configured libraries. The initial all-device
   probe remains in dapr.ui.actions/start! so persisted defaults are resolved before
-  they are painted; this monitor owns subsequent unplug/replug detection."
+  they are painted; this monitor owns subsequent disconnect/reconnect detection."
   [{:keys [state-atom interval-millis]}]
   (let [monitor {:state-atom      state-atom
                  :interval-millis (max 1 (or interval-millis default-interval-millis))
                  :running?        (atom true)
                  :signal          (Object.)}
-        thread  (doto (Thread. ^Runnable #(run-loop! monitor) "dapr-mtp-availability")
+        thread  (doto (Thread. ^Runnable #(run-loop! monitor) "dapr-device-availability")
                   (.setDaemon true)
                   (.start))]
     (assoc monitor :thread thread)))

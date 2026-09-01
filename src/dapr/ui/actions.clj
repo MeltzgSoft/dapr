@@ -165,8 +165,8 @@
   repaint the remaining catalogs from the cache, and re-queue a background refresh
   of the chosen source and sink. Used at launch and by the ↻ Refresh button — which
   is how a user forces an already-completed library to be re-walked after changing
-  it on the device side. MTP hot-plug availability itself is also kept current by
-  dapr.device.availability's monitor.
+  it on the device side. Disconnect/reconnect availability is also kept current by
+  dapr.device.availability's device-generic monitor.
 
   Only the *chosen* libraries are walked, here as everywhere: the others have no
   reader waiting on their catalogs, and reaching for a device that isn't attached

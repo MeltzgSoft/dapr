@@ -1,6 +1,5 @@
 (ns dapr.device.mtp.events
-  (:require [dapr.device.coordinator :as coord]
-            [dapr.device.events :as device-events]
+  (:require [dapr.device.events :as device-events]
             [dapr.device.fs :as device-fs]
             [dapr.device.mtp.fs :as mtp-fs]
             [dapr.state :as state]))
@@ -20,5 +19,4 @@
   true)
 
 (defmethod device-events/browser-entries! :mtp [{:keys [cwd]}]
-  (coord/with-device! (coord/library-device {:roots [cwd]})
-    #(device-fs/dir-children! cwd)))
+  (device-fs/dir-children! cwd))

@@ -17,6 +17,12 @@
     (Files/isDirectory (dfs/root-path! uri-str) (make-array LinkOption 0))
     (catch Exception _ false)))
 
+(defmethod dfs/with-access! :file [_ f]
+  (f))
+
+(defmethod dfs/close! :file [_]
+  nil)
+
 (defn local-places!
   "Top-level local browsing locations: each filesystem root plus the user's home
   directory, as {:name :uri :dir? true} entries."

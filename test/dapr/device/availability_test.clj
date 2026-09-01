@@ -20,42 +20,44 @@
       (is (= {1 true 2 false} (availability/probe! state-atom)))
       (is (= {1 true 2 false} (:library-availability @state-atom))))))
 
-(deftest failed-mtp-probe-greys-and-clears-selection-test
-  (let [library    {:id 2 :name "Player" :roots ["mtp://1:2:a/SD/"]}
+(deftest failed-device-probe-greys-and-clears-selection-test
+  (let [library    {:id 2 :name "Share" :roots ["smb://nas/Music/"]}
         state-atom (atom (-> state/initial-state
                              (state/set-libraries [library])
                              (assoc :source-id 2)
                              (state/set-library-available 2 true)))]
     (with-redefs [availability/library-available? (constantly false)]
-      (is (false? (availability/probe-mtp-library! state-atom library)))
+      (is (false? (availability/probe-library! state-atom library)))
       (is (false? (get-in @state-atom [:library-availability 2])))
       (is (nil? (:source-id @state-atom))))))
 
-(deftest monitor-reenables-replugged-mtp-library-test
+(deftest monitor-reenables-reconnected-libraries-test
   (let [mtp         {:id 2 :name "Player" :roots ["mtp://1:2:a/SD/"]}
         local       {:id 1 :name "Local" :roots ["file:///music/"]}
+        smb         {:id 3 :name "Share" :roots ["smb://nas/Music/"]}
         state-atom  (atom (-> state/initial-state
-                              (state/set-libraries [local mtp])
-                              (state/set-library-availability {1 true 2 false})))
+                              (state/set-libraries [local mtp smb])
+                              (state/set-library-availability {1 true 2 false 3 false})))
         probes      (atom 0)
         probed-ids  (atom [])
-        plugged?    (atom false)]
+        reachable   (atom {1 true 2 false 3 false})]
     (with-redefs-fn {#'availability/library-available-background?
                      (fn [library]
                        (swap! probed-ids conj (:id library))
                        (swap! probes inc)
-                       @plugged?)}
+                       (get @reachable (:id library)))}
       (fn []
         (let [monitor (availability/start! {:state-atom state-atom :interval-millis 5})]
           (try
-            (testing "an absent player stays grey until a probe sees it"
-              (is (wait-for #(pos? @probes)))
-              (is (false? (get-in @state-atom [:library-availability 2]))))
-            (testing "a later successful probe makes it selectable again"
-              (reset! plugged? true)
-              (is (wait-for #(true? (get-in @state-atom [:library-availability 2]))))
+            (testing "unreachable devices stay grey until a probe sees them"
+              (is (wait-for #(<= 3 @probes)))
+              (is (false? (get-in @state-atom [:library-availability 2])))
+              (is (false? (get-in @state-atom [:library-availability 3]))))
+            (testing "later successful probes make every backend selectable again"
+              (reset! reachable {1 true 2 true 3 true})
+              (is (wait-for #(every? true? (vals (:library-availability @state-atom)))))
               (is (true? (get-in @state-atom [:library-availability 1]))
-                  "non-MTP availability is preserved")
-              (is (= #{2} (set @probed-ids))
-                  "only MTP libraries are hot-plug polled"))
+                  "local availability is preserved")
+              (is (= #{1 2 3} (set @probed-ids))
+                  "file, MTP, and SMB libraries are all monitored"))
             (finally (availability/stop! monitor))))))))

@@ -138,18 +138,18 @@
       (finally
         (.delete path)))))
 
-(deftest failed-mtp-walk-reprobes-availability-test
+(deftest failed-device-walk-reprobes-availability-test
   (let [{:keys [refresher lib-id state-atom path]} (fixture!)
         library {:id lib-id :name "Player" :roots ["mtp://1:2:a/SD/Music/"]}
         probed  (atom nil)]
     (try
       (swap! state-atom state/set-libraries [library])
       (with-redefs [nio/scan-roots! (fn [_roots _opts] (throw (ex-info "unplugged" {})))
-                    availability/probe-mtp-library!
+                    availability/probe-library!
                     (fn [_state-atom seen-library] (reset! probed seen-library) false)]
         (refresh-library! refresher lib-id))
       (is (= library @probed)
-          "a failed MTP operation checks whether the player disappeared")
+          "a failed device operation checks whether its backend disappeared")
       (finally
         (.delete path)))))
 

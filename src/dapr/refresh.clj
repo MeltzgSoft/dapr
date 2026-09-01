@@ -285,12 +285,11 @@
               (swap! state-atom state/set-refresh-error lib-id summary)
               (t/log! {:level :error :error t
                        :msg   (format "Refresh of '%s' failed: %s" (:name library) summary)}))
-            ;; A failed MTP call commonly means hot-unplug. Re-probe only this
-            ;; backend: ordinary scan errors must not grey a reachable local/SMB
-            ;; library, while a disconnected player should become unselectable
-            ;; immediately and be picked up by the reconnect monitor later.
-            (when (= :mtp (:type (coord/library-device library)))
-              (availability/probe-mtp-library! state-atom library))))
+            ;; A failed device call may mean disconnect. The backend-specific
+            ;; available? method distinguishes that from an ordinary scan error:
+            ;; a reachable library stays enabled; a disconnected one is greyed
+            ;; immediately and picked up by the reconnect monitor later.
+            (availability/probe-library! state-atom library)))
         (repaint! refresher lib-id)))))
 
 (defn- run-loop!

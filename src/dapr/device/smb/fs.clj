@@ -8,8 +8,8 @@
   fetched per host from the OS keystore (dapr.fs.credentials) and handed to
   smb-nio through its env-map, never embedded in a URI. So no password is written
   to disk, and smb-nio's SMBPath.toUri stays credential-free for the folder
-  browser. One FileSystem is opened per host and reused across the concurrent
-  source/sink scans and the copy/delete pass.
+  browser. One FileSystem is opened per host and shared by overlapping work, then
+  closed as soon as the last scan/sync/browse/probe finishes.
 
   This namespace imports no smb-nio/jcifs classes — it works purely through
   java.nio.file, reaching the provider via the FileSystems SPI."
@@ -55,11 +55,16 @@
       username  (assoc "jcifs.smb.client.username" username)
       password  (assoc "jcifs.smb.client.password" password))))
 
-;; One FileSystem per host, reused across scans/copies. defonce so a dev reload
-;; keeps live connections; the lock serializes the open so two concurrent scans
-;; of the same host do not both try to create (and clash on) the FileSystem.
+;; One FileSystem per host, reused only while access leases overlap. defonce keeps
+;; enough process-global identity across a dev reload to close a connection opened
+;; by the old namespace; the final lease clears the cache. The lock serializes the
+;; open so two concurrent operations on one host do not both create (and clash on)
+;; the FileSystem.
 (defonce ^:private filesystems (atom {}))
 (def ^:private open-lock (Object.))
+
+(defonce ^:private session-users (atom 0))
+(defonce ^:private session-monitor (Object.))
 
 (defn- open-filesystem!
   "Open (or reuse) the FileSystem for `uri`'s host, authenticating from the OS
@@ -78,16 +83,17 @@
 
 (defn resolve-root-path!
   "Resolve a persisted smb:// root URI string to a Path on its (authenticated,
-  cached) FileSystem. The returned Path's toUri is credential-free, so it is safe
-  to surface in the folder browser and persist as a library root."
+  access-lease-scoped) FileSystem. The returned Path's toUri is credential-free,
+  so it is safe to surface in the folder browser and persist as a library root."
   ^Path [uri-str]
   (let [uri (URI. ^String uri-str)]
     (.getPath (open-filesystem! uri) (share-path uri) (make-array String 0))))
 
 (defn close-all!
-  "Close every cached SMB FileSystem and clear the cache. Called on system halt so
-  jcifs's non-daemon connection threads don't keep the JVM alive past shutdown.
-  Best-effort per host — a close failure is logged and the rest still close."
+  "Close every cached SMB FileSystem and clear the cache. Called after the final
+  access lease and again on system halt, so jcifs's non-daemon connection threads
+  neither idle between operations nor keep the JVM alive past shutdown. Best-effort
+  per host — a close failure is logged and the rest still close."
   []
   (locking open-lock
     (doseq [[host ^FileSystem fs] @filesystems]
@@ -98,6 +104,29 @@
                    :msg   (str "Failed to close SMB FileSystem for " host)}))))
     (reset! filesystems {})))
 
+(defn with-session!
+  "Run `f` inside a shared SMB access lease. FileSystems are opened lazily for the
+  hosts f actually touches; nested/concurrent users share them, and the final user
+  closes every cached FileSystem so jcifs holds no idle network connection."
+  [f]
+  (locking session-monitor (swap! session-users inc))
+  (try
+    (f)
+    (finally
+      (locking session-monitor
+        (let [remaining (swap! session-users dec)]
+          (when (neg? remaining)
+            (reset! session-users 0)
+            (throw (IllegalStateException. "SMB session released without an active user")))
+          (when (zero? remaining)
+            (close-all!)))))))
+
+(defmethod dfs/with-access! :smb [_ f]
+  (with-session! f))
+
+(defmethod dfs/close! :smb [_]
+  (close-all!))
+
 (defmethod dfs/root-path! :smb [uri-str]
   (resolve-root-path! uri-str))
 
@@ -106,13 +135,15 @@
   ;; unreachable share or a connect/auth failure surfaces here and degrades to
   ;; unavailable rather than throwing.
   (try
-    (Files/isDirectory (resolve-root-path! uri-str) (make-array LinkOption 0))
+    (with-session!
+      #(Files/isDirectory (resolve-root-path! uri-str) (make-array LinkOption 0)))
     (catch Exception _ false)))
 
 (defmethod dfs/dir-children! :smb [uri]
-  (let [smb-shares? (smb-format/host-root? uri)
-        keep?       (fn [^Path p]
-                      (if smb-shares?
-                        (not (str/ends-with? (str (.getFileName p)) "$"))
-                        (Files/isDirectory p (make-array LinkOption 0))))]
-    (dfs/directory-children! (dfs/root-path! uri) keep?)))
+  (with-session!
+    #(let [smb-shares? (smb-format/host-root? uri)
+           keep?       (fn [^Path p]
+                         (if smb-shares?
+                           (not (str/ends-with? (str (.getFileName p)) "$"))
+                           (Files/isDirectory p (make-array LinkOption 0))))]
+       (dfs/directory-children! (dfs/root-path! uri) keep?))))

@@ -103,7 +103,7 @@
   unavailable (explicitly false in `availability`), invalidating any plan. Unprobed
   libraries (absent from the map) are left selected. Used at launch so a persisted
   default on an unreachable device isn't pre-selected, on a manual refresh, and
-  when the MTP hot-plug monitor sees a player disconnect."
+  when the availability monitor sees a device disconnect."
   [state availability]
   (let [src-bad? (and (:source-id state) (false? (get availability (:source-id state))))
         snk-bad? (and (:sink-id state) (false? (get availability (:sink-id state))))]

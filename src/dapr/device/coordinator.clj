@@ -40,6 +40,7 @@
   through the java.nio provider SPI, which carries no component context — the same
   reason dapr.system's :dapr/devices component exists (see its docstring)."
   (:require [dapr.device.format :as device-format]
+            [dapr.device.fs :as device-fs]
             [dapr.domain.library :as lib])
   (:import (java.util.concurrent.locks ReentrantLock)))
 
@@ -99,7 +100,7 @@
   access wrapper owns any connection/session for exactly the duration of `f`."
   [device foreground? f]
   (if-not (coordinated? device)
-    (device-format/with-access! device f)
+    (device-fs/with-access! device f)
     (let [k                (:key device)
           ^ReentrantLock l (lock-for k)]
       (if-not foreground?
@@ -111,7 +112,7 @@
         (do (swap! foreground-waiters* update k (fnil inc 0))
             (try (.lock l)
                  (finally (swap! foreground-waiters* update k dec)))))
-      (try (device-format/with-access! device f)
+      (try (device-fs/with-access! device f)
            (finally (.unlock l))))))
 
 (defn with-device!

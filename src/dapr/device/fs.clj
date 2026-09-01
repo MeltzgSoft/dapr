@@ -21,6 +21,20 @@
   it must never throw — an unreachable or erroring probe returns false."
   device/device-type)
 
+(defmulti with-access!
+  "Run `f` inside any connection/session lifecycle required by `device`.
+
+  The coordinator decides *who* may use a device, then calls this filesystem
+  hook so the backend acquires native/network resources only for that use. New
+  device types default to no lifecycle wrapper."
+  (fn [device _f] (:type device)))
+
+(defmulti close!
+  "Release process-global filesystem resources owned by `device-type`. This is a
+  shutdown safety net; backends with scoped access normally have nothing left
+  open by the time it runs."
+  identity)
+
 (defmethod root-path! :default [uri]
   (throw (ex-info (str "Unsupported root URI: " uri) {:uri uri})))
 
@@ -28,6 +42,8 @@
   (throw (ex-info (str "Unsupported browse URI: " uri) {:uri uri})))
 
 (defmethod available? :default [_] false)
+(defmethod with-access! :default [_ f] (f))
+(defmethod close! :default [_] nil)
 
 (defn directory-children!
   "List child paths under `root`, keeping only entries accepted by `keep?` and

@@ -1,7 +1,8 @@
 (ns dapr.device.events
   "Side-effecting device browser hooks. Common UI events delegate here by device
   type; device namespaces own setup, connection, chooser, and listing behavior."
-  (:require [dapr.state :as state]
+  (:require [dapr.device.coordinator :as coord]
+            [dapr.state :as state]
             [taoensso.telemere :as t]))
 
 (defmulti open-browser!
@@ -31,7 +32,9 @@
   [state-atom]
   (future
     (try
-      (let [entries (browser-entries! (:browser @state-atom))]
+      (let [browser (:browser @state-atom)
+            device  (coord/library-device {:roots (some-> (:cwd browser) vector)})
+            entries (coord/with-device! device #(browser-entries! browser))]
         (swap! state-atom state/browser-set-entries entries))
       (catch Throwable t
         (swap! state-atom state/browser-set-entries [])

@@ -151,6 +151,9 @@
     (f)
     (finally (release-session!))))
 
+(defmethod dfs/with-access! :mtp [_ f]
+  (with-session! f))
+
 (defn close!
   "Release every open native MTP device session so the device isn't left locked for
   other apps.
@@ -189,3 +192,6 @@
                       {:id   id-str
                        :name (device-label info id-str)
                        :uri  (str "mtp://" id-str "/")})))))))
+
+(defmethod dfs/close! :mtp [_]
+  (close!))
