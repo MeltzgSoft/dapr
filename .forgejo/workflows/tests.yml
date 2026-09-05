@@ -132,16 +132,26 @@ jobs:
   # that a sync started from the page puts real files on disk.
   #
   # The general `linux` runner is DOCKERIZED -- unlike linux-usb/windows/
-  # windows-usb, which are VMs. So this job is root in a container of its own
-  # and installs what it needs per run, rather than depending on a bring-up step
-  # the way the device jobs below depend on their SMB shares: a fresh container
-  # would not have kept one anyway. It also means the port the app binds (7374)
-  # is namespaced to this job, so it cannot collide with anything else.
+  # windows-usb, which are VMs. So this job is root in a container of its own,
+  # rather than depending on a bring-up step the way the device jobs below
+  # depend on their SMB shares: a fresh container would not have kept one
+  # anyway. It also means the port the app binds (7374) is namespaced to this
+  # job, so it cannot collide with anything else.
+  #
+  # What it does NOT do any more is install Chromium's system libraries per
+  # run. `--with-deps` was 1m48s of a 2m4s step on run 152 -- 70 packages and
+  # 241 MB unpacked onto a throwaway overlay, while the browser itself was 14s
+  # -- so the job runs in Playwright's own image, which ships both. The tag
+  # MUST track @playwright/test in e2e/package-lock.json; the install step
+  # below re-downloads a mismatched browser rather than failing, so drift shows
+  # up as the cost coming back, not as a red job.
   #
   # This lives here rather than in a workflow of its own for the reason the file
   # header gives: a second file would duplicate the triggers.
   e2e:
     runs-on: linux
+    container:
+      image: mcr.microsoft.com/playwright:v1.62.1-noble
     steps:
       - uses: actions/checkout@v4
 
@@ -166,28 +176,18 @@ jobs:
         with:
           node-version: '22'
 
-      - name: Cache the Playwright browser
-        # Saves the ~115 MB browser download per run. The apt packages above are
-        # not cached: they are cheap next to the browser, and caching a package
-        # set across image changes is how you get a container that almost works.
-        uses: https://github.com/actions/cache@v4
-        with:
-          path: ~/.cache/ms-playwright
-          key: playwright-${{ hashFiles('e2e/package-lock.json') }}
-          restore-keys: playwright-
-
       - name: Install e2e dependencies
         working-directory: e2e
         run: npm ci
 
       - name: Install Chromium
         working-directory: e2e
-        # --with-deps apt-gets Chromium's shared libraries, which is fine and
-        # necessary in an ephemeral container. It assumes a Debian/Ubuntu base
-        # image; if the runner's default image ever stops being one, pin
-        # `container: mcr.microsoft.com/playwright:v<version>-noble` on this job
-        # instead -- that image ships the browsers and their libraries already.
-        run: npx playwright install --with-deps chromium
+        # No --with-deps: the container this job runs in ships those libraries,
+        # which is the whole point of pinning it. This step stays anyway, and
+        # costs seconds when the image already has the right browser at
+        # PLAYWRIGHT_BROWSERS_PATH -- it is what turns a tag that has drifted
+        # from package-lock.json into a slow run rather than a broken one.
+        run: npx playwright install chromium
 
       - name: Run the browser tests
         working-directory: e2e
